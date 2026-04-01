@@ -1,0 +1,59 @@
+name: Deploy Branch
+
+on:
+  push:
+    branches-ignore: [main, gh-pages]
+    paths-ignore: ['**.md']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read deploy config
+        id: config
+        run: |
+          if [ ! -f .deploy.json ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+            echo "No .deploy.json found, skipping deploy"
+            exit 0
+          fi
+          echo "skip=false" >> $GITHUB_OUTPUT
+          echo "slug=$(jq -r .slug .deploy.json)" >> $GITHUB_OUTPUT
+          echo "type=$(jq -r .type .deploy.json)" >> $GITHUB_OUTPUT
+
+      - name: Setup Node.js
+        if: steps.config.outputs.skip == 'false' && steps.config.outputs.type == 'vite'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Build Vite project
+        if: steps.config.outputs.skip == 'false' && steps.config.outputs.type == 'vite'
+        run: |
+          npm install
+          npm run build
+
+      - name: Deploy static files
+        if: steps.config.outputs.skip == 'false' && steps.config.outputs.type == 'static'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./
+          destination_dir: ${{ steps.config.outputs.slug }}
+          keep_files: true
+          exclude_assets: '.github,.git,.deploy.json,node_modules'
+
+      - name: Deploy Vite build
+        if: steps.config.outputs.skip == 'false' && steps.config.outputs.type == 'vite'
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
+          destination_dir: ${{ steps.config.outputs.slug }}
+          keep_files: true
