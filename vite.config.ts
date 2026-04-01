@@ -2,7 +2,7 @@ import { defineConfig } from 'vite';
 import path from 'path';
 
 export default defineConfig({
-  base: './',
+  base: '/dark-forest-star/',
   resolve: {
     alias: {
       '@core': path.resolve(__dirname, './src/core'),
