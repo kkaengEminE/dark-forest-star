@@ -15,8 +15,9 @@ import { CooperationSystem } from '../core/systems/CooperationSystem';
 import { HP_REGEN_RATE, MAP_WIDTH, MAP_HEIGHT, TREE_COUNT, FRAGMENT_SCATTER_COUNT, DEPOSIT_COUNT, MERGE_COUNT, STICK_CRAFT_COUNT, MAP_INSCRIBED_RADIUS, MAP_CENTER_X, MAP_CENTER_Y, VERTEX_TREE_INTERACTION_RANGE, MOUNTAIN_EXCLUSION_RADIUS, VICTORY_TRIGGER_RADIUS } from '../core/constants/GameConstants';
 import { distance } from '../shared/utils';
 import { getPolygonVertices, isInsidePolygon, clampToPolygon, randomPointInPolygon, getStarShape, type Vec2 } from '../core/utils/PolygonMapUtils';
-import { createMountain, createVertexTree, createPlacedStarMesh, enhanceTreeGlow } from './MountainBuilder';
+import { createMountain, createVertexTree, createPlacedStarMesh, enhanceTreeGlow, createFlowerShopBuilding, createPlacedFlower, createSpecialFlowerBloom } from './MountainBuilder';
 import { createVertexStarStates, getRequiredTier, type VertexStarState } from '../core/models/VertexStar';
+import { FlowerType, createFlower, type FlowerData, type FlowerShopState } from '../core/models/Flower';
 
 const PICKUP_RANGE = 24;
 const MINING_RANGE = 48;
@@ -102,6 +103,7 @@ export class Game {
   // 3D objects
   private playerGroup!: THREE.Group;
   private playerLight!: THREE.PointLight;
+  private playerAmbientLight!: THREE.PointLight;
   private playerGlow!: THREE.Mesh;
   private enemyMeshes = new Map<string, THREE.Group>();
   private fragmentMeshes = new Map<string, THREE.Mesh>();
@@ -110,6 +112,16 @@ export class Game {
   private treeMeshes: THREE.Mesh[] = [];
   private attackArc!: THREE.Mesh;
   private attackArcTimer = 0;
+
+  // Flower shop
+  private flowerShop: FlowerShopState = { flowers: [], specialFlowerBought: false };
+  private flowerShopGamePos = { x: 0, y: 0 };
+  private flowerShopMesh: THREE.Group | null = null;
+  private flowerMeshes: THREE.Group[] = [];
+  private flowerShopOpen = false;
+  private isTrueEnding = false;
+  private specialFlowerMesh: THREE.Group | null = null;
+  private respawnTimer = 0;
 
   // Input
   private keys = new Set<string>();
@@ -202,8 +214,15 @@ export class Game {
     this.enemies = [];
     this.npcs = [];
     this.inventoryOpen = false;
+    this.flowerShopOpen = false;
     this.currentMiningDeposit = null;
     this.messageTimer = 0;
+    this.flowerShop = { flowers: [], specialFlowerBought: false };
+    this.flowerMeshes = [];
+    this.flowerShopMesh = null;
+    this.isTrueEnding = false;
+    this.specialFlowerMesh = null;
+    document.getElementById('flower-shop-panel')!.classList.remove('open');
     this.keys.clear();
     this.keyDownThisFrame.clear();
     this.inputBlocked = false;
@@ -409,6 +428,13 @@ export class Game {
       this.treeMeshes.push(tree);
     }
 
+    // Flower shop building
+    this.flowerShopGamePos = { x: MAP_CENTER_X + MAP_INSCRIBED_RADIUS * 0.35, y: MAP_CENTER_Y + MAP_INSCRIBED_RADIUS * 0.25 };
+    const [fsx, fsz] = toWorld(this.flowerShopGamePos.x, this.flowerShopGamePos.y);
+    this.flowerShopMesh = createFlowerShopBuilding();
+    this.flowerShopMesh.position.set(fsx, 0, fsz);
+    this.scene.add(this.flowerShopMesh);
+
     // Player
     this.playerGroup = new THREE.Group();
     // Body (glowing sphere)
@@ -443,6 +469,11 @@ export class Game {
     this.playerLight.castShadow = true;
     this.playerLight.shadow.mapSize.set(512, 512);
     this.playerGroup.add(this.playerLight);
+
+    // Ambient visibility light (full-moon brightness around player when not cloaked)
+    this.playerAmbientLight = new THREE.PointLight(COLOR_MOON, 0, 20);
+    this.playerAmbientLight.position.y = 5;
+    this.playerGroup.add(this.playerAmbientLight);
 
     // Glow disc on ground
     const glowGeo = new THREE.CircleGeometry(2, 32);
@@ -705,6 +736,11 @@ export class Game {
       return;
     }
 
+    if (this.flowerShopOpen) {
+      this.handleFlowerShopKeys();
+      return;
+    }
+
     // Movement
     this.handleMovement(dt);
 
@@ -725,6 +761,9 @@ export class Game {
 
     // Vertex tree interaction (star placement)
     this.handleVertexTreeInteraction();
+
+    // Flower shop interaction
+    this.handleFlowerShopInteraction();
 
     // Victory check
     if (this.allStarsPlaced) {
@@ -786,6 +825,13 @@ export class Game {
     if (this.attackArcTimer > 0) {
       this.attackArcTimer -= dt;
       (this.attackArc.material as THREE.MeshBasicMaterial).opacity = Math.max(0, this.attackArcTimer / 0.25);
+    }
+
+    // Respawn check (every ~3 seconds via elapsed time)
+    this.respawnTimer = (this.respawnTimer ?? 0) + dt;
+    if (this.respawnTimer >= 3) {
+      this.respawnTimer = 0;
+      this.checkRespawns();
     }
   }
 
@@ -1060,6 +1106,16 @@ export class Game {
       (this.playerGlow.material as THREE.MeshBasicMaterial).opacity = 0.02;
     }
 
+    // Player ambient visibility light (simulates full-moon brightness around player)
+    if (ls.isOn && !ls.isCloaked && ls.fuel > 0) {
+      const fullMoonMb = 0.8;
+      const boost = Math.max(0, fullMoonMb - this.difficulty.moonBrightness);
+      this.playerAmbientLight.intensity = boost * 2.5;
+      this.playerAmbientLight.distance = 180 * WORLD_SCALE * 3;
+    } else {
+      this.playerAmbientLight.intensity = 0;
+    }
+
     // Dim player when cloaked
     const body = this.playerGroup.children[0] as THREE.Mesh;
     const bmat = body.material as THREE.MeshStandardMaterial;
@@ -1274,6 +1330,120 @@ export class Game {
     }
   }
 
+  // --- Flower Shop ---
+  private handleFlowerShopInteraction(): void {
+    const dist = distance(this.playerState.x, this.playerState.y, this.flowerShopGamePos.x, this.flowerShopGamePos.y);
+    if (dist >= VERTEX_TREE_INTERACTION_RANGE) return;
+    // Don't open if near a vertex tree (Z key conflict)
+    if (this.isNearUnplacedVertexTree()) return;
+
+    if (this.keyDownThisFrame.has('z')) {
+      this.flowerShopOpen = true;
+      this.updateFlowerShopUI();
+      document.getElementById('flower-shop-panel')!.classList.add('open');
+    } else if (this.messageTimer <= 0) {
+      this.showMessage('[Z] 꽃집 열기');
+    }
+  }
+
+  private handleFlowerShopKeys(): void {
+    if (this.keyDownThisFrame.has('z') || this.keyDownThisFrame.has('escape')) {
+      this.flowerShopOpen = false;
+      document.getElementById('flower-shop-panel')!.classList.remove('open');
+      return;
+    }
+    if (this.keyDownThisFrame.has('1')) this.buyFlower(FlowerType.BASIC);
+    if (this.keyDownThisFrame.has('2')) this.buyFlower(FlowerType.ADVANCED);
+    if (this.keyDownThisFrame.has('3')) this.buyFlower(FlowerType.SPECIAL);
+  }
+
+  private buyFlower(type: FlowerType): void {
+    const pouch = getActivePouch(this.inventory);
+    const vertexCount = this.difficulty.level;
+
+    if (type === FlowerType.BASIC) {
+      const idx = pouch.fragments.findIndex(f => f.tier === FragmentTier.MERGED);
+      if (idx === -1) { this.showMessage('✦합성 별조각이 필요합니다'); return; }
+      pouch.fragments.splice(idx, 1);
+    } else if (type === FlowerType.ADVANCED) {
+      const idx = pouch.fragments.findIndex(f => f.tier === FragmentTier.SUPER_MERGED);
+      if (idx === -1) { this.showMessage('✧초합성 별조각이 필요합니다'); return; }
+      pouch.fragments.splice(idx, 1);
+    } else {
+      // SPECIAL: costs vertexCount SUPER_MERGED
+      if (this.flowerShop.specialFlowerBought) { this.showMessage('이미 특별한 꽃을 구매했습니다'); return; }
+      const superFrags = pouch.fragments.filter(f => f.tier === FragmentTier.SUPER_MERGED);
+      if (superFrags.length < vertexCount) {
+        this.showMessage(`✧초합성 별조각 ${vertexCount}개가 필요합니다 (보유: ${superFrags.length})`);
+        return;
+      }
+      // Remove vertexCount SUPER_MERGED fragments
+      let removed = 0;
+      for (let i = pouch.fragments.length - 1; i >= 0 && removed < vertexCount; i--) {
+        if (pouch.fragments[i].tier === FragmentTier.SUPER_MERGED) {
+          pouch.fragments.splice(i, 1);
+          removed++;
+        }
+      }
+      this.flowerShop.specialFlowerBought = true;
+    }
+
+    // Place flower on map
+    const pt = randomPointInPolygon(this.mapVertices, 100);
+    const flower = createFlower(type, pt.x, pt.y);
+    this.flowerShop.flowers.push(flower);
+
+    const [wx, wz] = toWorld(flower.x, flower.y);
+    const mesh = createPlacedFlower(type);
+    mesh.position.set(wx, 0, wz);
+    this.scene.add(mesh);
+    this.flowerMeshes.push(mesh);
+
+    const name = type === FlowerType.SPECIAL ? '특별한 꽃' : type === FlowerType.ADVANCED ? '금빛 꽃' : '꽃';
+    this.showMessage(`${name}을 피웠습니다! (총 ${this.flowerShop.flowers.length}송이)`);
+    this.updateFlowerShopUI();
+  }
+
+  private updateFlowerShopUI(): void {
+    const pouch = getActivePouch(this.inventory);
+    const mergedCount = pouch.fragments.filter(f => f.tier === FragmentTier.MERGED).length;
+    const superCount = pouch.fragments.filter(f => f.tier === FragmentTier.SUPER_MERGED).length;
+    const vertexCount = this.difficulty.level;
+
+    document.getElementById('flower-shop-count')!.textContent = `피운 꽃: ${this.flowerShop.flowers.length}송이`;
+
+    const container = document.getElementById('flower-shop-items')!;
+    container.innerHTML = '';
+
+    const items = [
+      { key: '1', label: `꽃 (✦합성 x1)`, enabled: mergedCount >= 1, cost: `보유: ${mergedCount}` },
+      { key: '2', label: `금빛 꽃 (✧초합성 x1)`, enabled: superCount >= 1, cost: `보유: ${superCount}` },
+      {
+        key: '3',
+        label: this.flowerShop.specialFlowerBought ? '특별한 꽃 (구매 완료)' : `특별한 꽃 (✧초합성 x${vertexCount})`,
+        enabled: !this.flowerShop.specialFlowerBought && superCount >= vertexCount,
+        cost: this.flowerShop.specialFlowerBought ? '' : `보유: ${superCount}/${vertexCount}`,
+      },
+    ];
+
+    for (const item of items) {
+      const btn = document.createElement('button');
+      btn.textContent = `[${item.key}] ${item.label}`;
+      btn.disabled = !item.enabled;
+      if (item.cost) btn.title = item.cost;
+      container.appendChild(btn);
+    }
+  }
+
+  private isNearUnplacedVertexTree(): boolean {
+    for (const vt of this.vertexTrees) {
+      if (!vt.hasStarPlaced && distance(this.playerState.x, this.playerState.y, vt.gameX, vt.gameY) < VERTEX_TREE_INTERACTION_RANGE) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   // --- Victory: Center Star ---
   private spawnCenterStar(): void {
     const sides = this.difficulty.level;
@@ -1346,8 +1516,10 @@ export class Game {
     this.state = 'ending';
     this.endingElapsed = 0;
     this.endingPhase = 0;
+    this.isTrueEnding = this.flowerShop.specialFlowerBought;
     document.getElementById('hud')!.style.display = 'none';
     document.getElementById('inventory-panel')!.classList.remove('open');
+    document.getElementById('flower-shop-panel')!.classList.remove('open');
   }
 
   private updateEnding(dt: number): void {
@@ -1408,6 +1580,19 @@ export class Game {
       // Player glow intensifies
       this.playerLight.intensity = Math.min(10, this.playerLight.intensity + dt * 2);
 
+      // True ending: special flower blooms at center
+      if (this.isTrueEnding && this.specialFlowerMesh) {
+        const scale = Math.min(1, this.specialFlowerMesh.scale.x + dt * 0.5);
+        this.specialFlowerMesh.scale.setScalar(scale);
+        this.specialFlowerMesh.rotation.y += dt * 0.5;
+      } else if (this.isTrueEnding && !this.specialFlowerMesh && t >= 4.5) {
+        this.specialFlowerMesh = createSpecialFlowerBloom();
+        const [cx, cz] = toWorld(MAP_CENTER_X, MAP_CENTER_Y);
+        this.specialFlowerMesh.position.set(cx, 0, cz);
+        this.specialFlowerMesh.scale.setScalar(0);
+        this.scene.add(this.specialFlowerMesh);
+      }
+
       if (t >= 6 && this.endingPhase === 2) {
         this.endingPhase = 3;
         this.showEndingOverlay();
@@ -1462,14 +1647,25 @@ export class Game {
     overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;z-index:100;';
 
     const title = document.createElement('div');
-    title.textContent = '별이 되었습니다';
-    title.style.cssText = 'font-size:36px;color:#ffffcc;font-family:serif;opacity:0;transition:opacity 2s;';
+    title.textContent = this.isTrueEnding ? '꽃이 피었습니다' : '별이 되었습니다';
+    title.style.cssText = `font-size:36px;color:${this.isTrueEnding ? '#ffaadd' : '#ffffcc'};font-family:serif;opacity:0;transition:opacity 2s;`;
     overlay.appendChild(title);
 
     const sub = document.createElement('div');
-    sub.textContent = '어둠의 숲에 빛이 되어 남았습니다';
+    sub.textContent = this.isTrueEnding
+      ? '어둠 속에서, 빛이 아닌 생명을 피워냈습니다'
+      : '어둠의 숲에 빛이 되어 남았습니다';
     sub.style.cssText = 'font-size:14px;color:#888877;font-family:monospace;font-style:italic;margin-top:16px;opacity:0;transition:opacity 2s 1s;';
     overlay.appendChild(sub);
+
+    // Flower achievement
+    if (this.flowerShop.flowers.length > 0) {
+      const achievement = document.createElement('div');
+      achievement.textContent = `피운 꽃: ${this.flowerShop.flowers.length}송이`;
+      achievement.style.cssText = 'font-size:12px;color:#aa8866;font-family:monospace;margin-top:24px;opacity:0;transition:opacity 2s 2s;';
+      overlay.appendChild(achievement);
+      requestAnimationFrame(() => { achievement.style.opacity = '1'; });
+    }
 
     document.body.appendChild(overlay);
     this.endingOverlay = overlay;
@@ -1517,6 +1713,64 @@ export class Game {
     if (this.endingOverlay) {
       document.body.removeChild(this.endingOverlay);
       this.endingOverlay = null;
+    }
+  }
+
+  // --- Respawn System ---
+  private checkRespawns(): void {
+    const maxFragments = Math.round(FRAGMENT_SCATTER_COUNT * this.difficulty.fragmentDropRate);
+    const maxDeposits = Math.round(DEPOSIT_COUNT * this.difficulty.depositFrequency);
+    const maxEnemies = Math.round(ENEMY_COUNT * this.difficulty.enemySpawnRate);
+    const fragThreshold = Math.floor(maxFragments * 0.3);
+    const depThreshold = Math.floor(maxDeposits * 0.3);
+    const enemyThreshold = Math.floor(maxEnemies * 0.3);
+
+    // Respawn fragments
+    if (this.fragments.length < fragThreshold) {
+      const toSpawn = Math.min(3, maxFragments - this.fragments.length);
+      for (let i = 0; i < toSpawn; i++) {
+        const pt = randomPointInPolygon(this.mapVertices, 100);
+        const frag = createStarFragment(pt.x, pt.y);
+        this.fragments.push(frag);
+        this.createFragmentMesh(frag);
+      }
+    }
+
+    // Respawn deposits
+    if (this.deposits.length < depThreshold) {
+      const toSpawn = Math.min(2, maxDeposits - this.deposits.length);
+      for (let i = 0; i < toSpawn; i++) {
+        const pt = randomPointInPolygon(this.mapVertices, 200);
+        const dep = createStarDeposit(pt.x, pt.y);
+        this.deposits.push(dep);
+        this.createDepositMesh(dep);
+      }
+    }
+
+    // Respawn enemies
+    const aliveEnemies = this.enemies.filter(e => e.hp > 0);
+    if (aliveEnemies.length < enemyThreshold) {
+      const speciesList = Object.values(AnimalSpecies);
+      const hammerTypes = Object.values(HammerType);
+      const toSpawn = Math.min(2, maxEnemies - aliveEnemies.length);
+      for (let i = 0; i < toSpawn; i++) {
+        const pt = randomPointInPolygon(this.mapVertices, 150);
+        if (distance(pt.x, pt.y, MAP_CENTER_X, MAP_CENTER_Y) < 300) continue;
+        if (distance(pt.x, pt.y, this.playerState.x, this.playerState.y) < 400) continue;
+        const species = speciesList[Math.floor(Math.random() * speciesList.length)];
+        const hammerType = hammerTypes[Math.floor(Math.random() * hammerTypes.length)];
+        const patrolPath = [];
+        for (let p = 0; p < 4; p++) {
+          const pp = randomPointInPolygon(this.mapVertices, 100);
+          patrolPath.push({ x: pp.x, y: pp.y });
+        }
+        const animal = createHammerAnimal(species, hammerType, pt.x, pt.y, patrolPath);
+        animal.damage = Math.round(animal.damage * this.difficulty.enemyDamageMultiplier);
+        animal.hp = Math.round(animal.hp * this.difficulty.enemyHpMultiplier);
+        animal.maxHp = animal.hp;
+        this.enemies.push(animal);
+        this.createEnemyMesh(animal);
+      }
     }
   }
 
