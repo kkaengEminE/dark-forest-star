@@ -12,8 +12,11 @@ import { MiningSystem } from '../core/systems/MiningSystem';
 import { MergeSystem } from '../core/systems/MergeSystem';
 import { ProgressionSystem } from '../core/systems/ProgressionSystem';
 import { CooperationSystem } from '../core/systems/CooperationSystem';
-import { HP_REGEN_RATE, MAP_WIDTH, MAP_HEIGHT, TREE_COUNT, FRAGMENT_SCATTER_COUNT, DEPOSIT_COUNT, MERGE_COUNT, STICK_CRAFT_COUNT } from '../core/constants/GameConstants';
+import { HP_REGEN_RATE, MAP_WIDTH, MAP_HEIGHT, TREE_COUNT, FRAGMENT_SCATTER_COUNT, DEPOSIT_COUNT, MERGE_COUNT, STICK_CRAFT_COUNT, MAP_INSCRIBED_RADIUS, MAP_CENTER_X, MAP_CENTER_Y, VERTEX_TREE_INTERACTION_RANGE, MOUNTAIN_EXCLUSION_RADIUS, VICTORY_TRIGGER_RADIUS } from '../core/constants/GameConstants';
 import { distance } from '../shared/utils';
+import { getPolygonVertices, isInsidePolygon, clampToPolygon, randomPointInPolygon, getStarShape, type Vec2 } from '../core/utils/PolygonMapUtils';
+import { createMountain, createVertexTree, createPlacedStarMesh, enhanceTreeGlow } from './MountainBuilder';
+import { createVertexStarStates, getRequiredTier, type VertexStarState } from '../core/models/VertexStar';
 
 const PICKUP_RANGE = 24;
 const MINING_RANGE = 48;
@@ -66,7 +69,7 @@ export class Game {
   private clock = new THREE.Clock();
 
   // Game state
-  private state: 'title' | 'playing' | 'gameover' = 'title';
+  private state: 'title' | 'playing' | 'gameover' | 'ending' = 'title';
   private playerState!: PlayerState;
   private inventory!: InventoryState;
   private difficulty!: DifficultyConfig;
@@ -74,6 +77,27 @@ export class Game {
   private deposits: StarDepositData[] = [];
   private enemies: HammerAnimalData[] = [];
   private npcs: NPCData[] = [];
+
+  // Polygon map
+  private mapVertices: Vec2[] = [];
+  private vertexTrees: {
+    vertexIndex: number;
+    gameX: number;
+    gameY: number;
+    mesh: THREE.Group;
+    mountainMesh: THREE.Group;
+    hasStarPlaced: boolean;
+    starMesh?: THREE.Mesh;
+  }[] = [];
+  private vertexStarStates: VertexStarState[] = [];
+  private allStarsPlaced = false;
+  private centerStarMesh: THREE.Group | null = null;
+
+  // Ending sequence
+  private endingElapsed = 0;
+  private endingPhase = 0;
+  private ambientLight: THREE.AmbientLight | null = null;
+  private endingOverlay: HTMLDivElement | null = null;
 
   // 3D objects
   private playerGroup!: THREE.Group;
@@ -114,12 +138,10 @@ export class Game {
     const container = document.getElementById('difficulty-buttons')!;
     container.innerHTML = '';
     const levels = [
-      { level: DifficultyLevel.STAR_3, label: '☆3 보름달 (쉬움)' },
-      { level: DifficultyLevel.STAR_4, label: '☆4 상현달' },
-      { level: DifficultyLevel.STAR_5, label: '☆5 반달 (보통)' },
-      { level: DifficultyLevel.STAR_6, label: '☆6 하현달' },
-      { level: DifficultyLevel.STAR_8, label: '☆8 그믐달' },
-      { level: DifficultyLevel.STAR_12, label: '☆12 삭 (극한)' },
+      { level: DifficultyLevel.STAR_5, label: '⬠ 보름달 (쉬움)' },
+      { level: DifficultyLevel.STAR_6, label: '⬡ 하현달' },
+      { level: DifficultyLevel.STAR_8, label: '✦ 그믐달 (어려움)' },
+      { level: DifficultyLevel.STAR_12, label: '✧ 삭 (극한)' },
     ];
     for (const { level, label } of levels) {
       const btn = document.createElement('button');
@@ -136,7 +158,7 @@ export class Game {
     document.getElementById('gameover-screen')!.classList.remove('open');
 
     this.difficulty = { ...DIFFICULTY_PRESETS[level] };
-    this.playerState = createDefaultPlayer(MAP_WIDTH / 2, MAP_HEIGHT / 2);
+    this.playerState = createDefaultPlayer(MAP_CENTER_X, MAP_CENTER_Y);
     this.inventory = createDefaultInventory();
     this.fragments = [];
     this.deposits = [];
@@ -148,6 +170,16 @@ export class Game {
     this.keys.clear();
     this.keyDownThisFrame.clear();
     this.inputBlocked = false;
+
+    // Compute polygon map vertices
+    this.mapVertices = getPolygonVertices(level, MAP_INSCRIBED_RADIUS, MAP_CENTER_X, MAP_CENTER_Y);
+    this.vertexStarStates = createVertexStarStates(level, level);
+    this.vertexTrees = [];
+    this.allStarsPlaced = false;
+    this.centerStarMesh = null;
+    this.endingElapsed = 0;
+    this.endingPhase = 0;
+    this.endingOverlay = null;
 
     this.setupThreeJS();
     this.buildWorld();
@@ -201,8 +233,8 @@ export class Game {
     this.camera.lookAt(0, 0, 0);
 
     // Lighting
-    const ambient = new THREE.AmbientLight(COLOR_AMBIENT, 0.5 + mb * 1.5);
-    this.scene.add(ambient);
+    this.ambientLight = new THREE.AmbientLight(COLOR_AMBIENT, 0.5 + mb * 1.5);
+    this.scene.add(this.ambientLight);
 
     // Moon directional light
     const moonLight = new THREE.DirectionalLight(COLOR_MOON, 0.5 + mb * 1.5);
@@ -229,8 +261,24 @@ export class Game {
 
   // --- World Building ---
   private buildWorld(): void {
-    // Ground plane — large dark plane
-    const groundGeo = new THREE.PlaneGeometry(MAP_WIDTH * WORLD_SCALE, MAP_HEIGHT * WORLD_SCALE);
+    // Void plane beneath everything (dark abyss outside polygon)
+    const voidGeo = new THREE.PlaneGeometry(200, 200);
+    const voidMat = new THREE.MeshBasicMaterial({ color: 0x020408 });
+    const voidPlane = new THREE.Mesh(voidGeo, voidMat);
+    voidPlane.rotation.x = -Math.PI / 2;
+    voidPlane.position.y = -0.1;
+    this.scene.add(voidPlane);
+
+    // Polygon-shaped ground
+    const shape = new THREE.Shape();
+    const worldVerts = this.mapVertices.map(v => toWorld(v.x, v.y));
+    shape.moveTo(worldVerts[0][0], worldVerts[0][1]);
+    for (let i = 1; i < worldVerts.length; i++) {
+      shape.lineTo(worldVerts[i][0], worldVerts[i][1]);
+    }
+    shape.closePath();
+
+    const groundGeo = new THREE.ShapeGeometry(shape);
     const groundMat = new THREE.MeshStandardMaterial({
       color: COLOR_GROUND,
       roughness: 0.95,
@@ -241,8 +289,8 @@ export class Game {
     ground.receiveShadow = true;
     this.scene.add(ground);
 
-    // Subtle grid texture on ground
-    const gridGeo = new THREE.PlaneGeometry(MAP_WIDTH * WORLD_SCALE, MAP_HEIGHT * WORLD_SCALE);
+    // Grid overlay on polygon
+    const gridGeo = new THREE.ShapeGeometry(shape);
     const gridMat = new THREE.MeshStandardMaterial({
       color: COLOR_GROUND2,
       roughness: 1,
@@ -256,14 +304,67 @@ export class Game {
     grid.position.y = 0.01;
     this.scene.add(grid);
 
-    // Trees
+    // Polygon boundary line
+    const borderPoints = worldVerts.map(([wx, wz]) => new THREE.Vector3(wx, 0.05, wz));
+    borderPoints.push(borderPoints[0].clone()); // close the loop
+    const borderGeo = new THREE.BufferGeometry().setFromPoints(borderPoints);
+    const borderMat = new THREE.LineBasicMaterial({ color: 0x334455, linewidth: 1 });
+    const borderLine = new THREE.Line(borderGeo, borderMat);
+    this.scene.add(borderLine);
+
+    // Mountains at each vertex + vertex trees
+    this.vertexTrees = [];
+    for (let i = 0; i < this.mapVertices.length; i++) {
+      const v = this.mapVertices[i];
+      // Mountain position: slightly inward from vertex
+      const dx = MAP_CENTER_X - v.x;
+      const dy = MAP_CENTER_Y - v.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      const inset = 80; // push mountain slightly inward
+      const mx = v.x + (dx / len) * inset;
+      const my = v.y + (dy / len) * inset;
+
+      const [mwx, mwz] = toWorld(mx, my);
+      const mountainHeight = 4 + Math.random() * 2;
+      const mountain = createMountain(mountainHeight);
+      mountain.position.set(mwx, 0, mwz);
+      this.scene.add(mountain);
+
+      // Vertex tree on mountain peak (slightly more inward so player can reach)
+      const treeInset = 160;
+      const treeX = v.x + (dx / len) * treeInset;
+      const treeY = v.y + (dy / len) * treeInset;
+      const [twx, twz] = toWorld(treeX, treeY);
+      const vtree = createVertexTree(mountainHeight * 0.6);
+      vtree.position.set(twx, 0, twz);
+      this.scene.add(vtree);
+
+      this.vertexTrees.push({
+        vertexIndex: i,
+        gameX: treeX,
+        gameY: treeY,
+        mesh: vtree,
+        mountainMesh: mountain,
+        hasStarPlaced: false,
+      });
+    }
+
+    // Regular trees (inside polygon, away from center and mountains)
     this.treeMeshes = [];
     for (let i = 0; i < TREE_COUNT; i++) {
-      const tx = Math.random() * (MAP_WIDTH - 64) + 32;
-      const ty = Math.random() * (MAP_HEIGHT - 64) + 32;
-      if (distance(tx, ty, MAP_WIDTH / 2, MAP_HEIGHT / 2) < 100) continue;
+      const pt = randomPointInPolygon(this.mapVertices, 100);
+      // Skip if too close to center or any mountain
+      if (distance(pt.x, pt.y, MAP_CENTER_X, MAP_CENTER_Y) < 100) continue;
+      let tooCloseToMountain = false;
+      for (const vt of this.vertexTrees) {
+        if (distance(pt.x, pt.y, vt.gameX, vt.gameY) < MOUNTAIN_EXCLUSION_RADIUS) {
+          tooCloseToMountain = true;
+          break;
+        }
+      }
+      if (tooCloseToMountain) continue;
 
-      const [wx, wz] = toWorld(tx, ty);
+      const [wx, wz] = toWorld(pt.x, pt.y);
       const tree = this.createTree();
       tree.position.set(wx, 0, wz);
       tree.castShadow = true;
@@ -365,9 +466,8 @@ export class Game {
     // Fragments
     const fragCount = Math.round(FRAGMENT_SCATTER_COUNT * this.difficulty.fragmentDropRate);
     for (let i = 0; i < fragCount; i++) {
-      const x = Math.random() * (MAP_WIDTH - 100) + 50;
-      const y = Math.random() * (MAP_HEIGHT - 100) + 50;
-      const frag = createStarFragment(x, y);
+      const pt = randomPointInPolygon(this.mapVertices, 100);
+      const frag = createStarFragment(pt.x, pt.y);
       this.fragments.push(frag);
       this.createFragmentMesh(frag);
     }
@@ -375,9 +475,8 @@ export class Game {
     // Deposits
     const depCount = Math.round(DEPOSIT_COUNT * this.difficulty.depositFrequency);
     for (let i = 0; i < depCount; i++) {
-      const x = Math.random() * (MAP_WIDTH - 200) + 100;
-      const y = Math.random() * (MAP_HEIGHT - 200) + 100;
-      const dep = createStarDeposit(x, y);
+      const pt = randomPointInPolygon(this.mapVertices, 200);
+      const dep = createStarDeposit(pt.x, pt.y);
       this.deposits.push(dep);
       this.createDepositMesh(dep);
     }
@@ -387,19 +486,16 @@ export class Game {
     const hammerTypes = Object.values(HammerType);
     const enemyCount = Math.round(ENEMY_COUNT * this.difficulty.enemySpawnRate);
     for (let i = 0; i < enemyCount; i++) {
-      const x = Math.random() * (MAP_WIDTH - 200) + 100;
-      const y = Math.random() * (MAP_HEIGHT - 200) + 100;
-      if (distance(x, y, MAP_WIDTH / 2, MAP_HEIGHT / 2) < 300) continue;
+      const pt = randomPointInPolygon(this.mapVertices, 150);
+      if (distance(pt.x, pt.y, MAP_CENTER_X, MAP_CENTER_Y) < 300) continue;
       const species = speciesList[i % speciesList.length];
       const hammerType = hammerTypes[Math.min(Math.floor(i / speciesList.length), hammerTypes.length - 1)];
       const patrolPath = [];
       for (let p = 0; p < 4; p++) {
-        patrolPath.push({
-          x: Math.max(50, Math.min(MAP_WIDTH - 50, x + (Math.random() - 0.5) * 400)),
-          y: Math.max(50, Math.min(MAP_HEIGHT - 50, y + (Math.random() - 0.5) * 400)),
-        });
+        const pp = randomPointInPolygon(this.mapVertices, 100);
+        patrolPath.push({ x: pp.x, y: pp.y });
       }
-      const animal = createHammerAnimal(species, hammerType, x, y, patrolPath);
+      const animal = createHammerAnimal(species, hammerType, pt.x, pt.y, patrolPath);
       animal.damage = Math.round(animal.damage * this.difficulty.enemyDamageMultiplier);
       animal.hp = Math.round(animal.hp * this.difficulty.enemyHpMultiplier);
       animal.maxHp = animal.hp;
@@ -410,9 +506,8 @@ export class Game {
     // NPCs
     const dispositions = [NPCDisposition.FRIENDLY, NPCDisposition.NEUTRAL, NPCDisposition.NEUTRAL, NPCDisposition.HOSTILE];
     for (let i = 0; i < NPC_COUNT; i++) {
-      const x = Math.random() * (MAP_WIDTH - 400) + 200;
-      const y = Math.random() * (MAP_HEIGHT - 400) + 200;
-      const npc = createNPC(x, y, dispositions[i % dispositions.length]);
+      const pt = randomPointInPolygon(this.mapVertices, 250);
+      const npc = createNPC(pt.x, pt.y, dispositions[i % dispositions.length]);
       this.npcs.push(npc);
       this.createNPCMesh(npc);
     }
@@ -546,11 +641,15 @@ export class Game {
 
   // --- Game Loop ---
   private animate = (): void => {
-    if (this.state !== 'playing') return;
+    if (this.state !== 'playing' && this.state !== 'ending') return;
     requestAnimationFrame(this.animate);
 
     const dt = Math.min(this.clock.getDelta(), 0.05);
-    this.update(dt);
+    if (this.state === 'ending') {
+      this.updateEnding(dt);
+    } else {
+      this.update(dt);
+    }
     this.renderer.render(this.scene, this.camera);
     this.keyDownThisFrame.clear();
   };
@@ -586,6 +685,18 @@ export class Game {
 
     // NPC interaction
     this.handleNPCInteraction();
+
+    // Vertex tree interaction (star placement)
+    this.handleVertexTreeInteraction();
+
+    // Victory check
+    if (this.allStarsPlaced) {
+      const dist = distance(this.playerState.x, this.playerState.y, MAP_CENTER_X, MAP_CENTER_Y);
+      if (dist < VICTORY_TRIGGER_RADIUS) {
+        this.triggerVictoryEnding();
+        return;
+      }
+    }
 
     // Enemy AI
     this.updateEnemies(dt);
@@ -655,9 +766,12 @@ export class Game {
     this.playerState.x += vx * speed;
     this.playerState.y += vz * speed;
 
-    // Clamp to map bounds
-    this.playerState.x = Math.max(20, Math.min(MAP_WIDTH - 20, this.playerState.x));
-    this.playerState.y = Math.max(20, Math.min(MAP_HEIGHT - 20, this.playerState.y));
+    // Clamp to polygon bounds
+    if (!isInsidePolygon(this.playerState.x, this.playerState.y, this.mapVertices)) {
+      const clamped = clampToPolygon(this.playerState.x, this.playerState.y, this.mapVertices, 15);
+      this.playerState.x = clamped.x;
+      this.playerState.y = clamped.y;
+    }
 
     // Update 3D position
     const [wx, wz] = toWorld(this.playerState.x, this.playerState.y);
@@ -691,6 +805,9 @@ export class Game {
 
   // --- Mining ---
   private handleMining(dt: number): void {
+    // Skip mining if near a vertex tree (Z is used for star placement there)
+    if (this.isNearVertexTree()) return;
+
     if (this.keys.has('z')) {
       if (!this.currentMiningDeposit) {
         for (const dep of this.deposits) {
@@ -849,10 +966,12 @@ export class Game {
     for (const npc of this.npcs) {
       const dist = distance(this.playerState.x, this.playerState.y, npc.x, npc.y);
       if (npc.currentAction === NPCAction.IDLE && Math.random() < 0.005) {
-        npc.x += (Math.random() - 0.5) * 40;
-        npc.y += (Math.random() - 0.5) * 40;
-        npc.x = Math.max(50, Math.min(MAP_WIDTH - 50, npc.x));
-        npc.y = Math.max(50, Math.min(MAP_HEIGHT - 50, npc.y));
+        const newX = npc.x + (Math.random() - 0.5) * 40;
+        const newY = npc.y + (Math.random() - 0.5) * 40;
+        if (isInsidePolygon(newX, newY, this.mapVertices)) {
+          npc.x = newX;
+          npc.y = newY;
+        }
       } else if (npc.currentAction === NPCAction.FLEEING) {
         const dx = npc.x - this.playerState.x;
         const dy = npc.y - this.playerState.y;
@@ -1053,6 +1172,317 @@ export class Game {
     this.showMessage('+10 HP 회복');
   }
 
+  // --- Vertex Tree Interaction ---
+  private isNearVertexTree(): boolean {
+    for (const vt of this.vertexTrees) {
+      if (!vt.hasStarPlaced && distance(this.playerState.x, this.playerState.y, vt.gameX, vt.gameY) < VERTEX_TREE_INTERACTION_RANGE) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private handleVertexTreeInteraction(): void {
+    for (let i = 0; i < this.vertexTrees.length; i++) {
+      const vt = this.vertexTrees[i];
+      if (vt.hasStarPlaced) continue;
+
+      const dist = distance(this.playerState.x, this.playerState.y, vt.gameX, vt.gameY);
+      if (dist < VERTEX_TREE_INTERACTION_RANGE) {
+        const state = this.vertexStarStates[i];
+        const tierName = state.requiredTier === FragmentTier.MERGED ? '✦합성' : '✧초합성';
+        const placed = this.vertexTrees.filter(v => v.hasStarPlaced).length;
+        const total = this.vertexTrees.length;
+
+        if (this.keyDownThisFrame.has('z')) {
+          // Try to place star
+          const pouch = getActivePouch(this.inventory);
+          const fragIdx = pouch.fragments.findIndex(f => f.tier === state.requiredTier);
+          if (fragIdx !== -1) {
+            // Consume fragment and place star
+            pouch.fragments.splice(fragIdx, 1);
+            vt.hasStarPlaced = true;
+            state.isPlaced = true;
+
+            // Visual: create placed star mesh
+            const [twx, twz] = toWorld(vt.gameX, vt.gameY);
+            const starMesh = createPlacedStarMesh(1.5);
+            starMesh.position.set(twx, 0, twz);
+            this.scene.add(starMesh);
+            vt.starMesh = starMesh;
+
+            // Enhance tree glow
+            enhanceTreeGlow(vt.mesh);
+
+            const newPlaced = placed + 1;
+            this.showMessage(`별 배치 완료! (${newPlaced}/${total})`);
+
+            // Check if all stars placed
+            if (this.vertexTrees.every(v => v.hasStarPlaced)) {
+              this.allStarsPlaced = true;
+              this.spawnCenterStar();
+              this.showMessage('모든 별이 배치되었습니다! 중앙의 별로 가세요!');
+            }
+          } else {
+            this.showMessage(`${tierName} 별조각이 필요합니다`);
+          }
+        } else {
+          // Show hint
+          if (this.messageTimer <= 0) {
+            this.showMessage(`[Z] 별 배치 (${tierName} 필요) — ${placed}/${total}`);
+          }
+        }
+        return; // Only interact with nearest tree
+      }
+    }
+  }
+
+  // --- Victory: Center Star ---
+  private spawnCenterStar(): void {
+    const sides = this.difficulty.level;
+    const starPoints = getStarShape(sides, 100, 40, { x: MAP_CENTER_X, y: MAP_CENTER_Y });
+
+    // Create star line on ground
+    const group = new THREE.Group();
+    const worldPoints = starPoints.map(p => {
+      const [wx, wz] = toWorld(p.x, p.y);
+      return new THREE.Vector3(wx, 0.1, wz);
+    });
+    worldPoints.push(worldPoints[0].clone());
+
+    const lineGeo = new THREE.BufferGeometry().setFromPoints(worldPoints);
+    const lineMat = new THREE.LineBasicMaterial({
+      color: 0xffffaa,
+      linewidth: 2,
+      transparent: true,
+      opacity: 0,
+    });
+    const line = new THREE.Line(lineGeo, lineMat);
+    group.add(line);
+
+    // Glowing star shape fill
+    const shape = new THREE.Shape();
+    const wPts = starPoints.map(p => toWorld(p.x, p.y));
+    shape.moveTo(wPts[0][0], wPts[0][1]);
+    for (let i = 1; i < wPts.length; i++) shape.lineTo(wPts[i][0], wPts[i][1]);
+    shape.closePath();
+
+    const fillGeo = new THREE.ShapeGeometry(shape);
+    const fillMat = new THREE.MeshStandardMaterial({
+      color: 0xffffaa,
+      emissive: 0xffffaa,
+      emissiveIntensity: 0.5,
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide,
+    });
+    const fill = new THREE.Mesh(fillGeo, fillMat);
+    fill.rotation.x = -Math.PI / 2;
+    fill.position.y = 0.05;
+    group.add(fill);
+
+    // Point light at center
+    const light = new THREE.PointLight(0xffffaa, 0, 15);
+    const [cwx, cwz] = toWorld(MAP_CENTER_X, MAP_CENTER_Y);
+    light.position.set(cwx, 2, cwz);
+    group.add(light);
+
+    this.scene.add(group);
+    this.centerStarMesh = group;
+
+    // Fade in animation using tween over frames
+    let fadeProgress = 0;
+    const fadeIn = () => {
+      fadeProgress += 0.016;
+      const t = Math.min(fadeProgress / 2.5, 1); // 2.5 seconds
+      lineMat.opacity = t;
+      fillMat.opacity = t * 0.3;
+      fillMat.emissiveIntensity = t * 0.8;
+      light.intensity = t * 3;
+      if (t < 1 && this.state === 'playing') requestAnimationFrame(fadeIn);
+    };
+    requestAnimationFrame(fadeIn);
+  }
+
+  // --- Victory Ending Sequence ---
+  private triggerVictoryEnding(): void {
+    this.state = 'ending';
+    this.endingElapsed = 0;
+    this.endingPhase = 0;
+    document.getElementById('hud')!.style.display = 'none';
+    document.getElementById('inventory-panel')!.classList.remove('open');
+  }
+
+  private updateEnding(dt: number): void {
+    this.endingElapsed += dt;
+    const t = this.endingElapsed;
+
+    // Phase 0: Brighten the map (0-3s)
+    if (this.endingPhase === 0) {
+      const progress = Math.min(t / 3, 1);
+      this.renderer.toneMappingExposure = (1.5 + this.difficulty.moonBrightness * 2.0) + progress * 4;
+      if (this.ambientLight) this.ambientLight.intensity = (0.5 + this.difficulty.moonBrightness * 1.5) + progress * 3;
+      if (this.scene.fog instanceof THREE.FogExp2) {
+        this.scene.fog.density = Math.max(0, (0.008 + (1 - this.difficulty.moonBrightness) * 0.025) * (1 - progress));
+      }
+      if (t >= 2) {
+        this.endingPhase = 1;
+        this.transformEntitiesToStars();
+      }
+    }
+
+    // Phase 1: Entities rise (2-6s)
+    if (this.endingPhase >= 1) {
+      // Animate floating entities
+      for (const [, mesh] of this.enemyMeshes) {
+        mesh.position.y += dt * 3;
+        mesh.traverse(child => {
+          if (child instanceof THREE.Mesh) {
+            const mat = child.material as THREE.MeshStandardMaterial;
+            if (mat.transparent) mat.opacity = Math.max(0, mat.opacity - dt * 0.3);
+          }
+        });
+      }
+      for (const [, mesh] of this.npcMeshes) {
+        mesh.position.y += dt * 2.5;
+      }
+      for (const [, mesh] of this.fragmentMeshes) {
+        mesh.position.y += dt * 4;
+      }
+
+      if (t >= 4 && this.endingPhase === 1) {
+        this.endingPhase = 2;
+        // Vertex stars fly up
+        for (const vt of this.vertexTrees) {
+          if (vt.starMesh) {
+            vt.starMesh.userData.rising = true;
+          }
+        }
+      }
+    }
+
+    // Phase 2: Vertex stars rise (4-7s)
+    if (this.endingPhase >= 2) {
+      for (const vt of this.vertexTrees) {
+        if (vt.starMesh?.userData.rising) {
+          vt.starMesh.position.y += dt * 5;
+        }
+      }
+      // Player glow intensifies
+      this.playerLight.intensity = Math.min(10, this.playerLight.intensity + dt * 2);
+
+      if (t >= 6 && this.endingPhase === 2) {
+        this.endingPhase = 3;
+        this.showEndingOverlay();
+      }
+    }
+
+    // Phase 3: Text overlay shown (6s+), wait for input
+    if (this.endingPhase === 3 && t >= 8) {
+      this.endingPhase = 4;
+      this.showEndingControls();
+    }
+  }
+
+  private transformEntitiesToStars(): void {
+    const starMat = new THREE.MeshStandardMaterial({
+      color: 0xffffaa,
+      emissive: 0xffffaa,
+      emissiveIntensity: 1.0,
+      transparent: true,
+      opacity: 1,
+    });
+
+    // Transform enemies
+    for (const [, mesh] of this.enemyMeshes) {
+      mesh.traverse(child => {
+        if (child instanceof THREE.Mesh) {
+          child.material = starMat.clone();
+          child.scale.setScalar(0.5);
+        }
+      });
+    }
+
+    // Transform NPCs
+    for (const [, mesh] of this.npcMeshes) {
+      mesh.traverse(child => {
+        if (child instanceof THREE.Mesh) {
+          child.material = starMat.clone();
+          child.scale.setScalar(0.5);
+        }
+      });
+    }
+
+    // Transform remaining fragments (already star-like, just boost glow)
+    for (const [, mesh] of this.fragmentMeshes) {
+      const mat = mesh.material as THREE.MeshStandardMaterial;
+      mat.emissiveIntensity = 2.0;
+    }
+  }
+
+  private showEndingOverlay(): void {
+    const overlay = document.createElement('div');
+    overlay.style.cssText = 'position:fixed;top:0;left:0;width:100%;height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;pointer-events:none;z-index:100;';
+
+    const title = document.createElement('div');
+    title.textContent = '별이 되었습니다';
+    title.style.cssText = 'font-size:36px;color:#ffffcc;font-family:serif;opacity:0;transition:opacity 2s;';
+    overlay.appendChild(title);
+
+    const sub = document.createElement('div');
+    sub.textContent = '어둠의 숲에 빛이 되어 남았습니다';
+    sub.style.cssText = 'font-size:14px;color:#888877;font-family:monospace;font-style:italic;margin-top:16px;opacity:0;transition:opacity 2s 1s;';
+    overlay.appendChild(sub);
+
+    document.body.appendChild(overlay);
+    this.endingOverlay = overlay;
+
+    // Trigger fade-in
+    requestAnimationFrame(() => {
+      title.style.opacity = '1';
+      sub.style.opacity = '1';
+    });
+  }
+
+  private showEndingControls(): void {
+    if (!this.endingOverlay) return;
+
+    const controls = document.createElement('div');
+    controls.style.cssText = 'font-size:13px;color:#666655;font-family:monospace;margin-top:40px;opacity:0;transition:opacity 1.5s;pointer-events:auto;';
+    controls.textContent = '[ENTER] 다음 난이도  [ESC] 타이틀';
+    this.endingOverlay.appendChild(controls);
+    this.endingOverlay.style.pointerEvents = 'auto';
+
+    requestAnimationFrame(() => { controls.style.opacity = '1'; });
+
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Enter') {
+        window.removeEventListener('keydown', handleKey);
+        this.cleanupEnding();
+        const nextDiffs: Record<number, DifficultyLevel> = {
+          [DifficultyLevel.STAR_5]: DifficultyLevel.STAR_6,
+          [DifficultyLevel.STAR_6]: DifficultyLevel.STAR_8,
+          [DifficultyLevel.STAR_8]: DifficultyLevel.STAR_12,
+          [DifficultyLevel.STAR_12]: DifficultyLevel.STAR_12,
+        };
+        this.startGame(nextDiffs[this.difficulty.level]);
+      } else if (e.key === 'Escape') {
+        window.removeEventListener('keydown', handleKey);
+        this.cleanupEnding();
+        document.getElementById('title-screen')!.style.display = 'flex';
+        this.state = 'title';
+      }
+    };
+    window.addEventListener('keydown', handleKey);
+  }
+
+  private cleanupEnding(): void {
+    if (this.endingOverlay) {
+      document.body.removeChild(this.endingOverlay);
+      this.endingOverlay = null;
+    }
+  }
+
   // --- Game Over ---
   private gameOver(reason: string): void {
     this.state = 'gameover';
@@ -1183,17 +1613,16 @@ export class Game {
       const speciesList = Object.values(AnimalSpecies);
       const hammerTypes = Object.values(HammerType);
       while (this.enemies.length < targetEnemies) {
-        const x = Math.random() * (MAP_WIDTH - 200) + 100;
-        const y = Math.random() * (MAP_HEIGHT - 200) + 100;
+        const pt = randomPointInPolygon(this.mapVertices, 150);
+        const x = pt.x;
+        const y = pt.y;
         const i = this.enemies.length;
         const species = speciesList[i % speciesList.length];
         const hammerType = hammerTypes[Math.min(Math.floor(i / speciesList.length), hammerTypes.length - 1)];
         const patrolPath = [];
         for (let p = 0; p < 4; p++) {
-          patrolPath.push({
-            x: Math.max(50, Math.min(MAP_WIDTH - 50, x + (Math.random() - 0.5) * 400)),
-            y: Math.max(50, Math.min(MAP_HEIGHT - 50, y + (Math.random() - 0.5) * 400)),
-          });
+          const pp = randomPointInPolygon(this.mapVertices, 100);
+          patrolPath.push({ x: pp.x, y: pp.y });
         }
         const animal = createHammerAnimal(species, hammerType, x, y, patrolPath);
         animal.damage = Math.round(animal.damage * this.difficulty.enemyDamageMultiplier);
@@ -1211,9 +1640,8 @@ export class Game {
         if (mesh) { this.scene.remove(mesh); this.fragmentMeshes.delete(removed.id); }
       }
       while (this.fragments.length < targetFrags) {
-        const x = Math.random() * (MAP_WIDTH - 100) + 50;
-        const y = Math.random() * (MAP_HEIGHT - 100) + 50;
-        const frag = createStarFragment(x, y);
+        const pt = randomPointInPolygon(this.mapVertices, 100);
+        const frag = createStarFragment(pt.x, pt.y);
         this.fragments.push(frag);
         this.createFragmentMesh(frag);
       }

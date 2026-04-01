@@ -1,6 +1,4 @@
 export enum DifficultyLevel {
-  STAR_3 = 3,
-  STAR_4 = 4,
   STAR_5 = 5,
   STAR_6 = 6,
   STAR_8 = 8,
@@ -8,11 +6,10 @@ export enum DifficultyLevel {
 }
 
 export enum MoonPhase {
-  FULL = 'full',
-  GIBBOUS = 'gibbous',
-  QUARTER = 'quarter',
-  CRESCENT = 'crescent',
-  NEW = 'new',
+  FULL = 'full',           // 보름달
+  WANING_HALF = 'waning_half',  // 하현달
+  WANING_CRESCENT = 'waning_crescent', // 그믐달
+  NEW = 'new',             // 삭
 }
 
 export interface DifficultyConfig {
@@ -28,8 +25,8 @@ export interface DifficultyConfig {
 }
 
 export const DIFFICULTY_PRESETS: Record<DifficultyLevel, DifficultyConfig> = {
-  [DifficultyLevel.STAR_3]: {
-    level: DifficultyLevel.STAR_3,
+  [DifficultyLevel.STAR_5]: {
+    level: DifficultyLevel.STAR_5,
     moonPhase: MoonPhase.FULL,
     moonBrightness: 0.8,
     fragmentDropRate: 1.5,
@@ -39,20 +36,9 @@ export const DIFFICULTY_PRESETS: Record<DifficultyLevel, DifficultyConfig> = {
     enemySpawnRate: 0.5,
     depositFrequency: 1.5,
   },
-  [DifficultyLevel.STAR_4]: {
-    level: DifficultyLevel.STAR_4,
-    moonPhase: MoonPhase.GIBBOUS,
-    moonBrightness: 0.6,
-    fragmentDropRate: 1.2,
-    enemyDamageMultiplier: 0.85,
-    enemyHpMultiplier: 0.85,
-    darknessDensity: 0.75,
-    enemySpawnRate: 0.75,
-    depositFrequency: 1.2,
-  },
-  [DifficultyLevel.STAR_5]: {
-    level: DifficultyLevel.STAR_5,
-    moonPhase: MoonPhase.QUARTER,
+  [DifficultyLevel.STAR_6]: {
+    level: DifficultyLevel.STAR_6,
+    moonPhase: MoonPhase.WANING_HALF,
     moonBrightness: 0.4,
     fragmentDropRate: 1.0,
     enemyDamageMultiplier: 1.0,
@@ -61,27 +47,16 @@ export const DIFFICULTY_PRESETS: Record<DifficultyLevel, DifficultyConfig> = {
     enemySpawnRate: 1.0,
     depositFrequency: 1.0,
   },
-  [DifficultyLevel.STAR_6]: {
-    level: DifficultyLevel.STAR_6,
-    moonPhase: MoonPhase.CRESCENT,
-    moonBrightness: 0.2,
-    fragmentDropRate: 0.8,
-    enemyDamageMultiplier: 1.3,
-    enemyHpMultiplier: 1.3,
-    darknessDensity: 1.0,
-    enemySpawnRate: 1.3,
-    depositFrequency: 0.8,
-  },
   [DifficultyLevel.STAR_8]: {
     level: DifficultyLevel.STAR_8,
-    moonPhase: MoonPhase.CRESCENT,
-    moonBrightness: 0.1,
-    fragmentDropRate: 0.6,
-    enemyDamageMultiplier: 1.6,
-    enemyHpMultiplier: 1.6,
-    darknessDensity: 1.1,
-    enemySpawnRate: 1.6,
-    depositFrequency: 0.6,
+    moonPhase: MoonPhase.WANING_CRESCENT,
+    moonBrightness: 0.15,
+    fragmentDropRate: 0.7,
+    enemyDamageMultiplier: 1.5,
+    enemyHpMultiplier: 1.5,
+    darknessDensity: 1.05,
+    enemySpawnRate: 1.5,
+    depositFrequency: 0.7,
   },
   [DifficultyLevel.STAR_12]: {
     level: DifficultyLevel.STAR_12,

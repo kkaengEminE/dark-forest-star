@@ -8,12 +8,10 @@ interface DifficultyOption {
 }
 
 const DIFFICULTIES: DifficultyOption[] = [
-  { level: DifficultyLevel.STAR_3,  label: '△ 3각별', moonLabel: '보름달 - 쉬움' },
-  { level: DifficultyLevel.STAR_4,  label: '◇ 4각별', moonLabel: '상현달' },
-  { level: DifficultyLevel.STAR_5,  label: '⬠ 5각별', moonLabel: '반달 - 보통' },
+  { level: DifficultyLevel.STAR_5,  label: '⬠ 5각별', moonLabel: '보름달 - 쉬움' },
   { level: DifficultyLevel.STAR_6,  label: '⬡ 6각별', moonLabel: '하현달' },
   { level: DifficultyLevel.STAR_8,  label: '✦ 8각별', moonLabel: '그믐달 - 어려움' },
-  { level: DifficultyLevel.STAR_12, label: '✧ 12각별', moonLabel: '삭 - 악몽' },
+  { level: DifficultyLevel.STAR_12, label: '✧ 12각별', moonLabel: '삭 - 극한' },
 ];
 
 export class TitleScene extends Phaser.Scene {

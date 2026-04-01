@@ -3,6 +3,14 @@ export const MAP_HEIGHT = 3200;
 export const TILE_SIZE = 32;
 export const TREE_COUNT = 200;
 
+export const MAP_INSCRIBED_RADIUS = 1400;
+export const MAP_CENTER_X = MAP_WIDTH / 2;
+export const MAP_CENTER_Y = MAP_HEIGHT / 2;
+
+export const VERTEX_TREE_INTERACTION_RANGE = 48;
+export const MOUNTAIN_EXCLUSION_RADIUS = 120;
+export const VICTORY_TRIGGER_RADIUS = 50;
+
 export const FRAGMENT_SCATTER_COUNT = 40;
 export const DEPOSIT_COUNT = 15;
 

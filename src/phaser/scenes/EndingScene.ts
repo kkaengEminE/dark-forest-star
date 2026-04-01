@@ -85,8 +85,6 @@ export class EndingScene extends Phaser.Scene {
         // New Game+ - harder difficulty
         const currentDiff = data.difficulty ?? DifficultyLevel.STAR_5;
         const nextDiffs: Record<number, DifficultyLevel> = {
-          [DifficultyLevel.STAR_3]: DifficultyLevel.STAR_4,
-          [DifficultyLevel.STAR_4]: DifficultyLevel.STAR_5,
           [DifficultyLevel.STAR_5]: DifficultyLevel.STAR_6,
           [DifficultyLevel.STAR_6]: DifficultyLevel.STAR_8,
           [DifficultyLevel.STAR_8]: DifficultyLevel.STAR_12,
