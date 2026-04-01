@@ -1,34 +1,132 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dwarf Bunny: Between Carrots and Concrete</title>
-    <link rel="stylesheet" href="css/style.css">
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>별, 어둠의 숲</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; font-family: monospace; color: #ccc; }
+    #game-canvas { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; }
+    #hud { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 10; display: none; }
+    #hud > * { pointer-events: auto; }
+    #hud-bars { position: absolute; top: 16px; left: 16px; }
+    .bar-wrap { width: 180px; height: 12px; background: rgba(0,0,0,0.6); border: 1px solid #444; border-radius: 3px; margin-bottom: 4px; overflow: hidden; }
+    .bar-fill { height: 100%; transition: width 0.3s; }
+    #hp-bar { background: linear-gradient(90deg, #cc3333, #ff5555); }
+    #fuel-bar { background: linear-gradient(90deg, #cc9922, #ffcc44); }
+    .bar-label { font-size: 9px; color: #888; margin-bottom: 1px; }
+    #status-text { position: absolute; top: 16px; right: 16px; text-align: right; font-size: 11px; color: #aaaa88; }
+    #message-text { position: absolute; bottom: 80px; left: 50%; transform: translateX(-50%); font-size: 14px; color: #ffcc44; text-shadow: 0 0 8px rgba(255,204,68,0.5); opacity: 0; transition: opacity 0.3s; }
+    #controls-hint { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); font-size: 9px; color: #444; }
+    #mining-bar { position: absolute; bottom: 110px; left: 50%; transform: translateX(-50%); width: 140px; height: 6px; background: rgba(0,0,0,0.6); border: 1px solid #555; border-radius: 3px; overflow: hidden; display: none; }
+    #mining-fill { height: 100%; background: #44aaff; transition: width 0.1s; }
+    #title-screen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: #000; display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 30; }
+    #title-screen h1 { font-size: 44px; color: #ccccaa; text-shadow: 0 0 20px rgba(200,200,150,0.3); margin-bottom: 6px; }
+    #title-screen h2 { font-size: 12px; color: #555; letter-spacing: 6px; margin-bottom: 36px; }
+    .diff-btn { display: block; width: 180px; padding: 8px; margin: 3px; background: rgba(34,34,51,0.8); color: #aaaa88; border: 1px solid #444; border-radius: 4px; cursor: pointer; font-size: 12px; font-family: monospace; text-align: center; }
+    .diff-btn:hover { color: #ffcc44; border-color: #ffcc44; }
+    #inventory-panel { position: fixed; top: 50%; left: 50%; transform: translate(-50%,-50%); width: 380px; background: rgba(17,17,34,0.95); border: 1px solid #444; border-radius: 8px; padding: 18px; z-index: 20; display: none; }
+    #inventory-panel.open { display: block; }
+    #inventory-panel h3 { text-align: center; color: #ccccaa; margin-bottom: 10px; font-size: 13px; }
+    .inv-grid { display: grid; grid-template-columns: repeat(4,48px); gap: 5px; justify-content: center; margin-bottom: 10px; }
+    .inv-slot { width: 48px; height: 48px; background: rgba(34,34,51,0.8); border: 1px solid #555; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 18px; }
+    .inv-counts { text-align: center; font-size: 11px; color: #aaa; margin-bottom: 10px; }
+    .inv-actions button { display: block; width: 100%; padding: 5px 10px; margin-bottom: 3px; background: #333344; color: #ffcc44; border: 1px solid #555; border-radius: 3px; cursor: pointer; font-size: 11px; font-family: monospace; }
+    .inv-actions button:hover { color: #fff; }
+    .inv-actions button:disabled { color: #555; background: #1a1a22; cursor: default; }
+    .inv-sticks { margin-top: 10px; font-size: 10px; color: #ccaa44; }
+    .inv-hint { text-align: center; font-size: 9px; color: #555; margin-top: 10px; }
+    #gameover-screen { position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0,0,0,0.85); display: none; flex-direction: column; align-items: center; justify-content: center; z-index: 30; }
+    #gameover-screen.open { display: flex; }
+    #gameover-screen h2 { color: #cc4444; font-size: 28px; margin-bottom: 12px; }
+    #gameover-screen p { color: #888; margin-bottom: 16px; }
+    #gameover-screen button { padding: 8px 24px; background: #333; color: #ffcc44; border: 1px solid #555; border-radius: 4px; cursor: pointer; font-size: 13px; font-family: monospace; }
+    #admin-toggle { position: absolute; bottom: 12px; left: 12px; padding: 4px 10px; background: rgba(34,34,51,0.8); color: #888; border: 1px solid #444; border-radius: 4px; cursor: pointer; font-size: 10px; font-family: monospace; z-index: 15; }
+    #admin-toggle:hover { color: #ffcc44; border-color: #ffcc44; }
+    #admin-panel { position: absolute; bottom: 40px; left: 12px; width: 260px; background: rgba(17,17,34,0.95); border: 1px solid #555; border-radius: 6px; padding: 12px; display: none; z-index: 15; }
+    #admin-panel h4 { color: #ccccaa; font-size: 12px; margin-bottom: 10px; text-align: center; }
+    .admin-row { margin-bottom: 8px; }
+    .admin-row label { display: block; font-size: 9px; color: #888; margin-bottom: 2px; }
+    .admin-row .admin-inputs { display: flex; gap: 6px; align-items: center; }
+    .admin-row input[type="range"] { flex: 1; height: 4px; accent-color: #ffcc44; }
+    .admin-row input[type="number"] { width: 54px; padding: 2px 4px; background: #222233; color: #ccc; border: 1px solid #444; border-radius: 3px; font-size: 10px; font-family: monospace; text-align: right; }
+    #admin-apply { display: block; width: 100%; padding: 5px; margin-top: 8px; background: #333344; color: #ffcc44; border: 1px solid #555; border-radius: 3px; cursor: pointer; font-size: 11px; font-family: monospace; }
+    #admin-apply:hover { color: #fff; border-color: #ffcc44; }
+  </style>
 </head>
 <body>
-    <canvas id="gameCanvas"></canvas>
-
-    <!-- Sprites (loaded first - no dependencies) -->
-    <script src="js/sprites/tileSprites.js"></script>
-    <script src="js/sprites/objectSprites.js"></script>
-    <script src="js/sprites/playerSprites.js"></script>
-
-    <!-- Core systems -->
-    <script src="js/input.js"></script>
-    <script src="js/collision.js"></script>
-    <script src="js/ui.js"></script>
-    <script src="js/interaction.js"></script>
-    <script src="js/player.js"></script>
-
-    <!-- Scenes -->
-    <script src="js/scenes/cityScene.js"></script>
-    <script src="js/scenes/farmScene.js"></script>
-    <script src="js/scenes/roomScene.js"></script>
-    <script src="js/scenes/loadingScene.js"></script>
-
-    <!-- Scene manager + main loop (loaded last) -->
-    <script src="js/sceneManager.js"></script>
-    <script src="js/main.js"></script>
+  <canvas id="game-canvas" tabindex="0"></canvas>
+  <div id="title-screen">
+    <h1>별, 어둠의 숲</h1>
+    <h2>DARK FOREST STAR</h2>
+    <div id="difficulty-buttons"></div>
+  </div>
+  <div id="hud">
+    <div id="hud-bars">
+      <div class="bar-label">HP</div>
+      <div class="bar-wrap"><div class="bar-fill" id="hp-bar" style="width:100%"></div></div>
+      <div class="bar-label">연료</div>
+      <div class="bar-wrap"><div class="bar-fill" id="fuel-bar" style="width:100%"></div></div>
+    </div>
+    <div id="status-text"></div>
+    <div id="message-text"></div>
+    <div id="controls-hint">WASD 이동 | Q 클로킹 | SPACE 공격 | Z 채굴 | E 인벤토리</div>
+    <div id="mining-bar"><div id="mining-fill"></div></div>
+    <button id="admin-toggle">⚙ 관리자</button>
+    <div id="admin-panel">
+      <h4>관리자 모드</h4>
+      <div class="admin-row">
+        <label>밝기 (exposure)</label>
+        <div class="admin-inputs">
+          <input type="range" id="admin-brightness" min="0.5" max="5" step="0.1" value="1.0">
+          <input type="number" id="admin-brightness-val" min="0.5" max="5" step="0.1" value="1.0">
+        </div>
+      </div>
+      <div class="admin-row">
+        <label>몬스터 수</label>
+        <div class="admin-inputs">
+          <input type="range" id="admin-enemy-count" min="0" max="30" step="1" value="8">
+          <input type="number" id="admin-enemy-count-val" min="0" max="30" step="1" value="8">
+        </div>
+      </div>
+      <div class="admin-row">
+        <label>별 조각 수</label>
+        <div class="admin-inputs">
+          <input type="range" id="admin-frag-count" min="0" max="100" step="1" value="20">
+          <input type="number" id="admin-frag-count-val" min="0" max="100" step="1" value="20">
+        </div>
+      </div>
+      <div class="admin-row">
+        <label>몬스터 이동속도 (배율)</label>
+        <div class="admin-inputs">
+          <input type="range" id="admin-enemy-speed" min="0" max="3" step="0.1" value="1.0">
+          <input type="number" id="admin-enemy-speed-val" min="0" max="3" step="0.1" value="1.0">
+        </div>
+      </div>
+      <div class="admin-row">
+        <label>데미지 (배율)</label>
+        <div class="admin-inputs">
+          <input type="range" id="admin-damage" min="0" max="5" step="0.1" value="1.0">
+          <input type="number" id="admin-damage-val" min="0" max="5" step="0.1" value="1.0">
+        </div>
+      </div>
+      <button id="admin-apply">적용</button>
+    </div>
+  </div>
+  <div id="inventory-panel">
+    <h3 id="inv-title">별 주머니</h3>
+    <div class="inv-grid" id="inv-grid"></div>
+    <div class="inv-counts" id="inv-counts"></div>
+    <div class="inv-actions" id="inv-actions"></div>
+    <div class="inv-sticks" id="inv-sticks"></div>
+    <div class="inv-hint">[E] 닫기  [1~4] 단축키</div>
+  </div>
+  <div id="gameover-screen">
+    <h2 id="gameover-title">불이 꺼졌습니다</h2>
+    <p id="gameover-reason"></p>
+    <button id="gameover-restart">다시 시작</button>
+  </div>
+  <script type="module" src="/src/main.ts"></script>
 </body>
 </html>
