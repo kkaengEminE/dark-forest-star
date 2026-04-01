@@ -135,7 +135,27 @@ export class Game {
 
   // --- Title Screen ---
   private setupTitleScreen(): void {
-    const container = document.getElementById('difficulty-buttons')!;
+    const mainMenu = document.getElementById('main-menu')!;
+    const diffButtons = document.getElementById('difficulty-buttons')!;
+    const guidePanel = document.getElementById('guide-panel')!;
+    const lorePanel = document.getElementById('lore-panel')!;
+
+    const showPanel = (panel: 'main' | 'difficulty' | 'guide' | 'lore') => {
+      mainMenu.style.display = panel === 'main' ? '' : 'none';
+      diffButtons.style.display = panel === 'difficulty' ? '' : 'none';
+      guidePanel.style.display = panel === 'guide' ? '' : 'none';
+      lorePanel.style.display = panel === 'lore' ? '' : 'none';
+    };
+
+    // 메인 메뉴 버튼
+    document.getElementById('btn-start')!.addEventListener('click', () => showPanel('difficulty'));
+    document.getElementById('btn-guide')!.addEventListener('click', () => showPanel('guide'));
+    document.getElementById('btn-lore')!.addEventListener('click', () => showPanel('lore'));
+    document.getElementById('btn-guide-back')!.addEventListener('click', () => showPanel('main'));
+    document.getElementById('btn-lore-back')!.addEventListener('click', () => showPanel('main'));
+
+    // 난이도 선택 버튼
+    const container = diffButtons;
     container.innerHTML = '';
     const levels = [
       { level: DifficultyLevel.STAR_5, label: '⬠ 보름달 (쉬움)' },
@@ -143,6 +163,13 @@ export class Game {
       { level: DifficultyLevel.STAR_8, label: '✦ 그믐달 (어려움)' },
       { level: DifficultyLevel.STAR_12, label: '✧ 삭 (극한)' },
     ];
+    const backBtn = document.createElement('button');
+    backBtn.className = 'diff-btn';
+    backBtn.textContent = '← 돌아가기';
+    backBtn.style.marginTop = '10px';
+    backBtn.style.color = '#666';
+    backBtn.addEventListener('click', () => showPanel('main'));
+
     for (const { level, label } of levels) {
       const btn = document.createElement('button');
       btn.className = 'diff-btn';
@@ -150,12 +177,22 @@ export class Game {
       btn.addEventListener('click', (ev) => { (ev.target as HTMLElement).blur(); this.startGame(level); });
       container.appendChild(btn);
     }
+    container.appendChild(backBtn);
+  }
+
+  private showTitleMain(): void {
+    document.getElementById('title-screen')!.style.display = 'flex';
+    document.getElementById('main-menu')!.style.display = '';
+    document.getElementById('difficulty-buttons')!.style.display = 'none';
+    document.getElementById('guide-panel')!.style.display = 'none';
+    document.getElementById('lore-panel')!.style.display = 'none';
   }
 
   private startGame(level: DifficultyLevel): void {
     document.getElementById('title-screen')!.style.display = 'none';
     document.getElementById('hud')!.style.display = 'block';
     document.getElementById('gameover-screen')!.classList.remove('open');
+    document.getElementById('game-canvas')!.focus();
 
     this.difficulty = { ...DIFFICULTY_PRESETS[level] };
     this.playerState = createDefaultPlayer(MAP_CENTER_X, MAP_CENTER_Y);
@@ -634,7 +671,7 @@ export class Game {
     // Game over restart
     document.getElementById('gameover-restart')!.addEventListener('click', () => {
       document.getElementById('gameover-screen')!.classList.remove('open');
-      document.getElementById('title-screen')!.style.display = 'flex';
+      this.showTitleMain();
       this.state = 'title';
     });
   }
@@ -1469,7 +1506,7 @@ export class Game {
       } else if (e.key === 'Escape') {
         window.removeEventListener('keydown', handleKey);
         this.cleanupEnding();
-        document.getElementById('title-screen')!.style.display = 'flex';
+        this.showTitleMain();
         this.state = 'title';
       }
     };

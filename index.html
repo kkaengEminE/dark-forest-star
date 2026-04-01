@@ -60,7 +60,64 @@
   <div id="title-screen">
     <h1>별, 어둠의 숲</h1>
     <h2>DARK FOREST STAR</h2>
-    <div id="difficulty-buttons"></div>
+    <!-- 메인 메뉴 -->
+    <div id="main-menu">
+      <button class="diff-btn" id="btn-start">시작하기</button>
+      <button class="diff-btn" id="btn-guide">설정</button>
+      <button class="diff-btn" id="btn-lore">암흑의 숲이란</button>
+    </div>
+    <!-- 난이도 선택 -->
+    <div id="difficulty-buttons" style="display:none"></div>
+    <!-- 설정/가이드 패널 -->
+    <div id="guide-panel" style="display:none; max-width:420px; text-align:left;">
+      <h3 style="color:#ccccaa; text-align:center; margin-bottom:14px; font-size:15px;">게임 안내</h3>
+      <p style="color:#999; font-size:11px; line-height:1.7; margin-bottom:12px;">
+        어둠의 숲에서 별 조각을 모아 빛이 되는 탐험/크래프팅 게임입니다.<br>
+        숲에 흩어진 별 조각을 채굴하고 합성하여, 맵 꼭짓점의 나무에 마법의 별을 배치하세요.<br>
+        모든 꼭짓점을 채우면 중앙에 거대한 별이 나타납니다.
+      </p>
+      <h4 style="color:#ccccaa; margin-bottom:8px; font-size:12px;">조작키</h4>
+      <table style="width:100%; font-size:11px; color:#aaa; border-collapse:collapse; margin-bottom:14px;">
+        <tr><td style="padding:3px 6px; color:#ffcc44;">W A S D / 방향키</td><td style="padding:3px 6px;">이동</td></tr>
+        <tr><td style="padding:3px 6px; color:#ffcc44;">SPACE</td><td style="padding:3px 6px;">공격</td></tr>
+        <tr><td style="padding:3px 6px; color:#ffcc44;">Z</td><td style="padding:3px 6px;">채굴 / 별 배치</td></tr>
+        <tr><td style="padding:3px 6px; color:#ffcc44;">Q</td><td style="padding:3px 6px;">은신 토글</td></tr>
+        <tr><td style="padding:3px 6px; color:#ffcc44;">E</td><td style="padding:3px 6px;">인벤토리 열기/닫기</td></tr>
+        <tr><td style="padding:3px 6px; color:#ffcc44;">1~4</td><td style="padding:3px 6px;">인벤토리 단축키 (합성/제작/경험치/회복)</td></tr>
+      </table>
+      <h4 style="color:#ccccaa; margin-bottom:8px; font-size:12px;">팁</h4>
+      <p style="color:#888; font-size:10px; line-height:1.6; margin-bottom:14px;">
+        - 빛을 켜면 적이 감지합니다. 은신(Q)으로 숨으세요.<br>
+        - NPC와 협력 채굴하면 보너스 조각을 얻습니다.<br>
+        - 폭력을 남용하면 망치동물로 변이됩니다. 빛 점수를 유지하세요.
+      </p>
+      <button class="diff-btn" id="btn-guide-back" style="margin:0 auto;">돌아가기</button>
+    </div>
+    <!-- 암흑의 숲 이론 패널 -->
+    <div id="lore-panel" style="display:none; max-width:420px; text-align:left;">
+      <h3 style="color:#ccccaa; text-align:center; margin-bottom:14px; font-size:15px;">암흑의 숲 이론</h3>
+      <p style="color:#999; font-size:11px; line-height:1.8; margin-bottom:10px;">
+        암흑의 숲 이론은 류츠신의 소설 <span style="color:#ccaa88;">《삼체》</span>에서 제시된 우주 문명 간의 생존 법칙입니다.
+      </p>
+      <p style="color:#888; font-size:11px; line-height:1.8; margin-bottom:10px;">
+        우주는 암흑의 숲과 같습니다. 모든 문명은 총을 든 사냥꾼이며,
+        다른 생명체를 발견하면 상대가 위협이 될 수 있으므로 먼저 제거하려 합니다.
+        자신의 존재를 드러내는 것은 곧 죽음을 의미합니다.
+      </p>
+      <p style="color:#888; font-size:11px; line-height:1.8; margin-bottom:10px;">
+        이 이론의 두 가지 공리:
+      </p>
+      <p style="color:#aaa; font-size:11px; line-height:1.8; margin-bottom:6px; padding-left:10px; border-left:2px solid #444;">
+        <strong style="color:#ccaa88;">1. 생존은 문명의 최우선 목표이다.</strong><br>
+        <strong style="color:#ccaa88;">2. 문명은 끊임없이 성장하지만, 우주의 자원은 유한하다.</strong>
+      </p>
+      <p style="color:#777; font-size:10px; line-height:1.7; margin-top:12px; margin-bottom:14px;">
+        이 게임에서 당신은 어둠의 숲에서 빛을 밝히는 존재입니다.
+        빛을 밝히면 발견되지만, 빛이 없으면 아무것도 할 수 없습니다.
+        협력할 것인가, 숨을 것인가 — 선택은 당신의 몫입니다.
+      </p>
+      <button class="diff-btn" id="btn-lore-back" style="margin:0 auto;">돌아가기</button>
+    </div>
   </div>
   <div id="hud">
     <div id="hud-bars">
