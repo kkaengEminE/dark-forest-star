@@ -1,6 +1,7 @@
 import { type HammerAnimalData, AnimalState } from '../models/HammerAnimal';
 import type { PlayerState } from '../models/Player';
 import { LightSystem } from './LightSystem';
+import { AlignmentSystem } from './AlignmentSystem';
 import { distance } from '../../shared/utils';
 
 const ALERT_DURATION = 1.5;
@@ -13,7 +14,11 @@ export class AISystem {
     dt: number,
   ): { shouldAttack: boolean } {
     const distToPlayer = distance(animal.x, animal.y, playerState.x, playerState.y);
-    const playerDetectionRadius = LightSystem.getDetectionRadius(playerState.lightSource);
+    let playerDetectionRadius = LightSystem.getDetectionRadius(playerState.lightSource);
+    // Cloak leak: even when cloaked, evil players leak some light
+    if (playerDetectionRadius === 0) {
+      playerDetectionRadius = AlignmentSystem.getCloakLeakDetectionRadius(playerState, playerState.lightSource);
+    }
     let shouldAttack = false;
 
     if (animal.attackCooldown > 0) {
@@ -93,6 +98,20 @@ export class AISystem {
   }
 
   private static moveToward(
+    entity: { x: number; y: number },
+    tx: number, ty: number,
+    speed: number, dt: number,
+  ): void {
+    const dx = tx - entity.x;
+    const dy = ty - entity.y;
+    const dist = Math.sqrt(dx * dx + dy * dy);
+    if (dist < 1) return;
+    entity.x += (dx / dist) * speed * dt;
+    entity.y += (dy / dist) * speed * dt;
+  }
+
+  /** Public version for NPC movement */
+  static moveNpcToward(
     entity: { x: number; y: number },
     tx: number, ty: number,
     speed: number, dt: number,

@@ -1,5 +1,6 @@
 import * as THREE from 'three';
-import { createDefaultPlayer, type PlayerState } from '../core/models/Player';
+import { createDefaultPlayer, LIGHT_VISUAL_BY_TYPE, type PlayerState } from '../core/models/Player';
+import { AlignmentSystem } from '../core/systems/AlignmentSystem';
 import { createDefaultInventory, addFragment, getActivePouch, type InventoryState } from '../core/models/Inventory';
 import { createStarFragment, createStarDeposit, FragmentTier, type StarFragmentData, type StarDepositData } from '../core/models/StarFragment';
 import { createHammerAnimal, AnimalSpecies, HammerType, AnimalState, type HammerAnimalData } from '../core/models/HammerAnimal';
@@ -15,15 +16,20 @@ import { CooperationSystem } from '../core/systems/CooperationSystem';
 import { HP_REGEN_RATE, MAP_WIDTH, MAP_HEIGHT, TREE_COUNT, FRAGMENT_SCATTER_COUNT, DEPOSIT_COUNT, MERGE_COUNT, STICK_CRAFT_COUNT, MAP_INSCRIBED_RADIUS, MAP_CENTER_X, MAP_CENTER_Y, VERTEX_TREE_INTERACTION_RANGE, MOUNTAIN_EXCLUSION_RADIUS, VICTORY_TRIGGER_RADIUS } from '../core/constants/GameConstants';
 import { distance } from '../shared/utils';
 import { getPolygonVertices, isInsidePolygon, clampToPolygon, randomPointInPolygon, getStarShape, type Vec2 } from '../core/utils/PolygonMapUtils';
-import { createMountain, createVertexTree, createPlacedStarMesh, enhanceTreeGlow, createFlowerShopBuilding, createPlacedFlower, createSpecialFlowerBloom } from './MountainBuilder';
+import { createMountain, createVertexTree, createPlacedStarMesh, enhanceTreeGlow, createFlowerShopBuilding, createPlacedFlower, createSpecialFlowerBloom, createChestMesh } from './MountainBuilder';
 import { createVertexStarStates, getRequiredTier, type VertexStarState } from '../core/models/VertexStar';
 import { FlowerType, createFlower, type FlowerData, type FlowerShopState } from '../core/models/Flower';
+import { ChestType, ChestState, createChest, type ChestData } from '../core/models/Chest';
+import { ChestSystem } from '../core/systems/ChestSystem';
 
 const PICKUP_RANGE = 24;
 const MINING_RANGE = 48;
 const ATTACK_RANGE = 40;
 const ENEMY_COUNT = 8;
 const NPC_COUNT = 4;
+const CHEST_RANGE = 60;
+const SOLO_CHEST_COUNT = 4;
+const COOP_CHEST_COUNT = 2;
 const WORLD_SCALE = 0.02; // Convert 2D px to 3D units (3200px → 64 units)
 
 // Color palette — Atkinson Grimshaw style, pastel night tones
@@ -102,6 +108,8 @@ export class Game {
 
   // 3D objects
   private playerGroup!: THREE.Group;
+  private playerBody!: THREE.Mesh;
+  private playerFlame!: THREE.Mesh;
   private playerLight!: THREE.PointLight;
   private playerAmbientLight!: THREE.PointLight;
   private playerGlow!: THREE.Mesh;
@@ -112,6 +120,11 @@ export class Game {
   private treeMeshes: THREE.Mesh[] = [];
   private attackArc!: THREE.Mesh;
   private attackArcTimer = 0;
+
+  // Chests
+  private chests: ChestData[] = [];
+  private chestMeshes = new Map<string, THREE.Group>();
+  private currentOpeningChest: ChestData | null = null;
 
   // Flower shop
   private flowerShop: FlowerShopState = { flowers: [], specialFlowerBought: false };
@@ -216,6 +229,9 @@ export class Game {
     this.inventoryOpen = false;
     this.flowerShopOpen = false;
     this.currentMiningDeposit = null;
+    this.chests = [];
+    this.chestMeshes.clear();
+    this.currentOpeningChest = null;
     this.messageTimer = 0;
     this.flowerShop = { flowers: [], specialFlowerBought: false };
     this.flowerMeshes = [];
@@ -449,6 +465,7 @@ export class Game {
     body.position.y = 0.4;
     body.castShadow = true;
     this.playerGroup.add(body);
+    this.playerBody = body;
 
     // Flame
     const flameGeo = new THREE.ConeGeometry(0.12, 0.3, 8);
@@ -462,6 +479,7 @@ export class Game {
     const flame = new THREE.Mesh(flameGeo, flameMat);
     flame.position.y = 0.8;
     this.playerGroup.add(flame);
+    this.playerFlame = flame;
 
     // Player point light
     this.playerLight = new THREE.PointLight(COLOR_PLAYER_GLOW, 2, 15);
@@ -579,6 +597,39 @@ export class Game {
       this.npcs.push(npc);
       this.createNPCMesh(npc);
     }
+
+    // Chests (SOLO scattered, COOP scarce, one with NPC requesting help)
+    for (let i = 0; i < SOLO_CHEST_COUNT; i++) {
+      const pt = randomPointInPolygon(this.mapVertices, 150);
+      const chest = createChest(pt.x, pt.y, ChestType.SOLO);
+      this.chests.push(chest);
+      this.createChestMeshOnMap(chest);
+    }
+    for (let i = 0; i < COOP_CHEST_COUNT; i++) {
+      const pt = randomPointInPolygon(this.mapVertices, 200);
+      // First COOP chest gets a requesting NPC nearby
+      let chest;
+      if (i === 0 && this.npcs.length > 0) {
+        // Pick a friendly NPC to be the requester
+        const requester = this.npcs.find(n => n.disposition === NPCDisposition.FRIENDLY) || this.npcs[0];
+        requester.x = pt.x + 30;
+        requester.y = pt.y + 30;
+        requester.currentAction = NPCAction.REQUESTING_HELP;
+        chest = createChest(pt.x, pt.y, ChestType.COOP, requester.id);
+      } else {
+        chest = createChest(pt.x, pt.y, ChestType.COOP);
+      }
+      this.chests.push(chest);
+      this.createChestMeshOnMap(chest);
+    }
+  }
+
+  private createChestMeshOnMap(chest: ChestData): void {
+    const mesh = createChestMesh(chest.type);
+    const [wx, wz] = toWorld(chest.x, chest.y);
+    mesh.position.set(wx, 0, wz);
+    this.scene.add(mesh);
+    this.chestMeshes.set(chest.id, mesh);
   }
 
   private createFragmentMesh(frag: StarFragmentData): void {
@@ -699,6 +750,14 @@ export class Game {
       this.keys.delete(e.key.toLowerCase());
     });
 
+    // Keep focus on canvas during gameplay — prevents buttons/UI from stealing keyboard input
+    const canvas = document.getElementById('game-canvas')!;
+    document.addEventListener('click', () => {
+      if (this.state === 'playing') {
+        canvas.focus();
+      }
+    });
+
     // Game over restart
     document.getElementById('gameover-restart')!.addEventListener('click', () => {
       document.getElementById('gameover-screen')!.classList.remove('open');
@@ -753,11 +812,14 @@ export class Game {
     // Fragment pickup
     this.checkFragmentPickup();
 
+    // Chest opening (must come before mining; both use Z key)
+    this.handleChestOpening(dt);
+
     // Mining
     this.handleMining(dt);
 
     // NPC interaction
-    this.handleNPCInteraction();
+    this.handleNPCInteraction(dt);
 
     // Vertex tree interaction (star placement)
     this.handleVertexTreeInteraction();
@@ -872,6 +934,16 @@ export class Game {
       const frag = this.fragments[i];
       const dist = distance(this.playerState.x, this.playerState.y, frag.x, frag.y);
       if (dist < PICKUP_RANGE) {
+        // Evil players have a chance to lose fragments to the darkness
+        const vanishChance = AlignmentSystem.getFragmentVanishChance(this.playerState);
+        if (vanishChance > 0 && Math.random() < vanishChance) {
+          this.fragments.splice(i, 1);
+          const mesh = this.fragmentMeshes.get(frag.id);
+          if (mesh) { this.scene.remove(mesh); this.fragmentMeshes.delete(frag.id); }
+          this.showMessage('악의 기운이 별조각을 삼켰습니다...');
+          continue;
+        }
+
         if (addFragment(this.inventory, frag)) {
           this.fragments.splice(i, 1);
           const mesh = this.fragmentMeshes.get(frag.id);
@@ -890,6 +962,10 @@ export class Game {
   private handleMining(dt: number): void {
     // Skip mining if near a vertex tree (Z is used for star placement there)
     if (this.isNearVertexTree()) return;
+    // Skip mining if currently opening a chest
+    if (this.currentOpeningChest) return;
+    // Skip mining if near any chest (chest takes priority for Z key)
+    if (this.isNearChest()) return;
 
     if (this.keys.has('z')) {
       if (!this.currentMiningDeposit) {
@@ -944,6 +1020,32 @@ export class Game {
       if (d < ATTACK_RANGE && d < nearestDist) { nearestDist = d; nearestEnemy = enemy; }
     }
 
+    // Also consider NPCs as attack targets (priority by distance)
+    let nearestNpc: NPCData | null = null;
+    for (const n of this.npcs) {
+      const d = distance(this.playerState.x, this.playerState.y, n.x, n.y);
+      if (d < ATTACK_RANGE && d < nearestDist) { nearestDist = d; nearestNpc = n; nearestEnemy = null; }
+    }
+
+    if (nearestNpc) {
+      const damage = baseDamage;
+      nearestNpc.hp -= damage;
+      const npcGroup = this.npcMeshes.get(nearestNpc.id);
+      if (npcGroup) {
+        this.flashMesh(npcGroup, 0xff4444, 200);
+        this.spawnDamageNumber(npcGroup.position, damage, 0xff4444);
+      }
+      if (nearestNpc.hp <= 0) {
+        const idx = this.npcs.indexOf(nearestNpc);
+        if (idx !== -1) this.npcs.splice(idx, 1);
+        if (npcGroup) { this.scene.remove(npcGroup); this.npcMeshes.delete(nearestNpc.id); }
+        AlignmentSystem.addEvilness(this.playerState, 1);
+        for (const other of this.npcs) other.trustOfPlayer -= 20;
+        this.showMessage('NPC를 처치했습니다 (악 +1)');
+      }
+      return;
+    }
+
     if (nearestEnemy) {
       let damage: number;
       let stickBroken = false;
@@ -977,6 +1079,7 @@ export class Game {
           this.fragments.push(frag);
           this.createFragmentMesh(frag);
         }
+        AlignmentSystem.addGoodness(this.playerState, 0.5);
         this.showMessage('망치동물 처치!');
       }
 
@@ -1045,10 +1148,67 @@ export class Game {
   }
 
   // --- NPC ---
-  private handleNPCInteraction(): void {
+  private handleNPCInteraction(dt: number): void {
+    const playerLightRadius = LightSystem.getDetectionRadius(this.playerState.lightSource);
+    const playerLightOn = playerLightRadius > 0 && !this.playerState.lightSource.isCloaked;
+
     for (const npc of this.npcs) {
       const dist = distance(this.playerState.x, this.playerState.y, npc.x, npc.y);
-      if (npc.currentAction === NPCAction.IDLE && Math.random() < 0.005) {
+
+      // Drawn to light: NPC sees player's light when not cloaked, walks toward it (or COOP chest)
+      if (playerLightOn && dist < playerLightRadius * 1.2 &&
+          (npc.currentAction === NPCAction.IDLE || npc.currentAction === NPCAction.FLEEING)) {
+        npc.currentAction = NPCAction.DRAWN_TO_LIGHT;
+        // If player is opening a COOP chest, target the chest instead
+        if (this.currentOpeningChest && this.currentOpeningChest.type === ChestType.COOP) {
+          npc.drawTargetX = this.currentOpeningChest.x;
+          npc.drawTargetY = this.currentOpeningChest.y;
+        } else {
+          npc.drawTargetX = this.playerState.x;
+          npc.drawTargetY = this.playerState.y;
+        }
+      }
+
+      if (npc.currentAction === NPCAction.DRAWN_TO_LIGHT) {
+        // Update target if player switches to opening a COOP chest
+        if (this.currentOpeningChest && this.currentOpeningChest.type === ChestType.COOP) {
+          npc.drawTargetX = this.currentOpeningChest.x;
+          npc.drawTargetY = this.currentOpeningChest.y;
+        }
+        if (npc.drawTargetX !== undefined && npc.drawTargetY !== undefined) {
+          AISystem.moveNpcToward(npc, npc.drawTargetX, npc.drawTargetY, 30, dt);
+        }
+        // Reach a COOP chest → join opening
+        if (this.currentOpeningChest && this.currentOpeningChest.type === ChestType.COOP) {
+          const dToChest = distance(npc.x, npc.y, this.currentOpeningChest.x, this.currentOpeningChest.y);
+          if (dToChest < CHEST_RANGE) {
+            npc.currentAction = NPCAction.OPENING_CHEST;
+            npc.targetChestId = this.currentOpeningChest.id;
+            if (!this.currentOpeningChest.openerIds.includes(npc.id)) {
+              this.currentOpeningChest.openerIds.push(npc.id);
+            }
+          }
+        }
+        // Light goes off → return to idle
+        if (!playerLightOn) {
+          npc.currentAction = NPCAction.IDLE;
+        }
+      } else if (npc.currentAction === NPCAction.OPENING_CHEST) {
+        const chest = this.chests.find(c => c.id === npc.targetChestId);
+        if (!chest || chest.state === ChestState.OPENED) {
+          npc.currentAction = NPCAction.IDLE;
+          npc.targetChestId = null;
+        }
+      } else if (npc.currentAction === NPCAction.REQUESTING_HELP) {
+        // Stay near requested chest, slight idle wander
+        if (Math.random() < 0.005) {
+          npc.x += (Math.random() - 0.5) * 10;
+          npc.y += (Math.random() - 0.5) * 10;
+        }
+        if (dist < CHEST_RANGE * 1.5 && this.messageTimer <= 0) {
+          this.showMessage('NPC가 상자 여는 것을 도와달라고 합니다');
+        }
+      } else if (npc.currentAction === NPCAction.IDLE && Math.random() < 0.005) {
         const newX = npc.x + (Math.random() - 0.5) * 40;
         const newY = npc.y + (Math.random() - 0.5) * 40;
         if (isInsidePolygon(newX, newY, this.mapVertices)) {
@@ -1088,9 +1248,156 @@ export class Game {
     }
   }
 
+  // --- Chest Opening ---
+  private isNearChest(): boolean {
+    for (const c of this.chests) {
+      if (c.state === ChestState.OPENED) continue;
+      if (distance(this.playerState.x, this.playerState.y, c.x, c.y) < CHEST_RANGE) return true;
+    }
+    return false;
+  }
+
+  private handleChestOpening(dt: number): void {
+    if (this.isNearVertexTree()) return;
+
+    if (!this.keys.has('z')) {
+      // Released Z → cancel
+      if (this.currentOpeningChest) {
+        const idx = this.currentOpeningChest.openerIds.indexOf('player');
+        if (idx !== -1) this.currentOpeningChest.openerIds.splice(idx, 1);
+        this.currentOpeningChest = null;
+        this.hideMiningBar();
+      }
+      return;
+    }
+
+    // Find chest in range to start opening
+    if (!this.currentOpeningChest) {
+      for (const c of this.chests) {
+        if (c.state === ChestState.OPENED) continue;
+        if (distance(this.playerState.x, this.playerState.y, c.x, c.y) >= CHEST_RANGE) continue;
+
+        // COOP chests require cloak off + light on
+        if (c.type === ChestType.COOP) {
+          if (this.playerState.lightSource.isCloaked) {
+            if (this.messageTimer <= 0) this.showMessage('망토를 벗어야 협력 상자를 열 수 있습니다');
+            return;
+          }
+          if (!this.playerState.lightSource.isOn || this.playerState.lightSource.fuel <= 0) {
+            if (this.messageTimer <= 0) this.showMessage('빛이 꺼져 있어 NPC를 부를 수 없습니다');
+            return;
+          }
+        }
+
+        this.currentOpeningChest = c;
+        if (!c.openerIds.includes('player')) c.openerIds.push('player');
+        break;
+      }
+    }
+
+    if (!this.currentOpeningChest) return;
+    const chest = this.currentOpeningChest;
+
+    // COOP: opening canceled if cloak goes on or light goes out mid-progress
+    if (chest.type === ChestType.COOP &&
+        (this.playerState.lightSource.isCloaked || !this.playerState.lightSource.isOn || this.playerState.lightSource.fuel <= 0)) {
+      this.showMessage('망토를 벗어야 합니다 (협력 중단)');
+      const idx = chest.openerIds.indexOf('player');
+      if (idx !== -1) chest.openerIds.splice(idx, 1);
+      this.currentOpeningChest = null;
+      this.hideMiningBar();
+      return;
+    }
+
+    const result = ChestSystem.advance(chest, dt, chest.openerIds.length);
+    this.showMiningBar(chest.currentOpenProgress, chest.openTimeRequired);
+
+    if (result === 'opened') {
+      const initiator = chest.requesterNpcId ? 'npc' : 'player';
+      this.distributeChestReward(chest, initiator);
+      this.removeChest(chest);
+      this.currentOpeningChest = null;
+      this.hideMiningBar();
+    } else if (result === 'blocked') {
+      // Waiting for NPC to arrive — keep bar visible but no progress
+      if (this.messageTimer <= 0 && chest.type === ChestType.COOP) {
+        this.showMessage('NPC를 기다리는 중...');
+      }
+    }
+  }
+
+  private distributeChestReward(chest: ChestData, initiator: 'player' | 'npc'): void {
+    const mul = AlignmentSystem.getChestRewardMultiplier(this.playerState);
+    const { raw, merged } = ChestSystem.rollRewards(chest, mul);
+
+    const isNpcOwned = (initiator === 'npc');
+    const playerShare = isNpcOwned
+      ? Math.min(1, 0.3 + AlignmentSystem.getHelperShareBonus(this.playerState))
+      : 1.0;
+
+    const playerRaw = Math.round(raw * playerShare);
+    const playerMerged = Math.round(merged * playerShare);
+
+    // Spawn player's share as fragments at chest position (auto-pickup)
+    for (let i = 0; i < playerRaw; i++) {
+      const frag = createStarFragment(chest.x + (Math.random() - 0.5) * 40, chest.y + (Math.random() - 0.5) * 40, FragmentTier.RAW);
+      this.fragments.push(frag);
+      this.createFragmentMesh(frag);
+    }
+    for (let i = 0; i < playerMerged; i++) {
+      const frag = createStarFragment(chest.x + (Math.random() - 0.5) * 40, chest.y + (Math.random() - 0.5) * 40, FragmentTier.MERGED);
+      this.fragments.push(frag);
+      this.createFragmentMesh(frag);
+    }
+
+    // Distribute remaining to participating NPCs (added to their inventory)
+    const remainingRaw = raw - playerRaw;
+    const remainingMerged = merged - playerMerged;
+    const participatingNpcIds = chest.openerIds.filter(id => id !== 'player');
+    if (participatingNpcIds.length > 0) {
+      const perRaw = Math.floor(remainingRaw / participatingNpcIds.length);
+      const perMerged = Math.floor(remainingMerged / participatingNpcIds.length);
+      for (const id of participatingNpcIds) {
+        const npc = this.npcs.find(n => n.id === id);
+        if (!npc) continue;
+        const pouch = npc.inventory.pouches[npc.inventory.activePouchIndex];
+        for (let i = 0; i < perRaw && pouch.fragments.length < pouch.capacity; i++) {
+          pouch.fragments.push(createStarFragment(npc.x, npc.y, FragmentTier.RAW));
+        }
+        for (let i = 0; i < perMerged && pouch.fragments.length < pouch.capacity; i++) {
+          pouch.fragments.push(createStarFragment(npc.x, npc.y, FragmentTier.MERGED));
+        }
+        npc.currentAction = NPCAction.IDLE;
+        npc.targetChestId = null;
+        npc.trustOfPlayer += 5;
+      }
+    }
+
+    if (isNpcOwned) {
+      AlignmentSystem.addGoodness(this.playerState, 1);
+      this.showMessage(`상자 열기 완료! ★${playerRaw} ✦${playerMerged} (선 +1)`);
+    } else {
+      this.showMessage(`상자 열기 완료! ★${playerRaw} ✦${playerMerged}`);
+    }
+  }
+
+  private removeChest(chest: ChestData): void {
+    const idx = this.chests.indexOf(chest);
+    if (idx !== -1) this.chests.splice(idx, 1);
+    const mesh = this.chestMeshes.get(chest.id);
+    if (mesh) {
+      this.scene.remove(mesh);
+      this.chestMeshes.delete(chest.id);
+    }
+  }
+
   // --- Visual Updates ---
   private updateVisuals(dt: number): void {
     const ls = this.playerState.lightSource;
+    const visual = LIGHT_VISUAL_BY_TYPE[ls.type];
+
+    // Body scale by light source level
+    this.playerBody.scale.setScalar(visual.bodyScale);
 
     // Player light intensity
     if (ls.isOn && !ls.isCloaked && ls.fuel > 0) {
@@ -1106,30 +1413,31 @@ export class Game {
       (this.playerGlow.material as THREE.MeshBasicMaterial).opacity = 0.02;
     }
 
-    // Player ambient visibility light (simulates full-moon brightness around player)
+    // Player ambient visibility light (simulates full-moon brightness, scaled by level)
     if (ls.isOn && !ls.isCloaked && ls.fuel > 0) {
       const fullMoonMb = 0.8;
       const boost = Math.max(0, fullMoonMb - this.difficulty.moonBrightness);
-      this.playerAmbientLight.intensity = boost * 2.5;
-      this.playerAmbientLight.distance = 180 * WORLD_SCALE * 3;
+      this.playerAmbientLight.intensity = boost * 2.5 * visual.rangeMul;
+      this.playerAmbientLight.distance = ls.range * visual.rangeMul * WORLD_SCALE * 3;
     } else {
       this.playerAmbientLight.intensity = 0;
     }
 
     // Dim player when cloaked
-    const body = this.playerGroup.children[0] as THREE.Mesh;
-    const bmat = body.material as THREE.MeshStandardMaterial;
+    const bmat = this.playerBody.material as THREE.MeshStandardMaterial;
     bmat.emissiveIntensity = ls.isCloaked ? 0.1 : 0.5;
 
-    // Flame flicker
-    const flame = this.playerGroup.children[1] as THREE.Mesh;
+    // Flame flicker (multiplied by body scale to keep proportional)
+    const flameBase = visual.bodyScale;
     if (ls.fuel < ls.maxFuel * 0.2 && ls.isOn) {
-      flame.scale.setScalar(0.7 + Math.random() * 0.6);
+      this.playerFlame.scale.setScalar((0.7 + Math.random() * 0.6) * flameBase);
     } else if (ls.isCloaked) {
-      flame.scale.setScalar(0.3);
+      this.playerFlame.scale.setScalar(0.3 * flameBase);
     } else {
-      flame.scale.setScalar(1);
+      this.playerFlame.scale.setScalar(flameBase);
     }
+    // Move flame closer to body proportionally
+    this.playerFlame.position.y = 0.4 + 0.4 * flameBase;
 
     // Fragment bobbing animation
     const time = this.clock.elapsedTime;
@@ -1147,10 +1455,14 @@ export class Game {
     document.getElementById('fuel-bar')!.style.width = `${fuel}%`;
 
     const pouch = getActivePouch(this.inventory);
+    const align = this.playerState.evilness > 0
+      ? `<span style="color:#ff6644">악 ${'●'.repeat(this.playerState.evilness)}</span>`
+      : `<span style="color:#ffcc44">선 ${'◆'.repeat(Math.max(1, this.playerState.goodness))}</span>`;
     document.getElementById('status-text')!.innerHTML =
       `Lv.${this.playerState.level} | XP:${this.playerState.xp}<br>` +
       `★ ${pouch.fragments.length} | ⚔ ${this.inventory.starSticks.length}<br>` +
-      `빛:${this.playerState.lightScore} 망치:${this.playerState.hammerScore}`;
+      `빛:${this.playerState.lightScore} 망치:${this.playerState.hammerScore}<br>` +
+      align;
   }
 
   // --- Inventory UI ---

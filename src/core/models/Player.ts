@@ -45,8 +45,18 @@ export interface PlayerState {
   hammerScore: number;
   cooperationLevel: number;
   hammerLevel: number;
+  goodness: number;
+  evilness: number;
   isAlive: boolean;
 }
+
+export const LIGHT_VISUAL_BY_TYPE: Record<LightSourceType, { bodyScale: number; rangeMul: number }> = {
+  [LightSourceType.CANDLE]:     { bodyScale: 0.40, rangeMul: 0.45 },
+  [LightSourceType.LIGHT_BULB]: { bodyScale: 0.60, rangeMul: 0.70 },
+  [LightSourceType.LED]:        { bodyScale: 0.80, rangeMul: 1.00 },
+  [LightSourceType.SPOTLIGHT]:  { bodyScale: 1.00, rangeMul: 1.35 },
+  [LightSourceType.FLOODLIGHT]: { bodyScale: 1.20, rangeMul: 1.80 },
+};
 
 export function createDefaultPlayer(x: number, y: number): PlayerState {
   const stats = LIGHT_SOURCE_STATS[LightSourceType.CANDLE];
@@ -72,6 +82,8 @@ export function createDefaultPlayer(x: number, y: number): PlayerState {
     hammerScore: 0,
     cooperationLevel: 0,
     hammerLevel: 0,
+    goodness: 1,
+    evilness: 0,
     isAlive: true,
   };
 }

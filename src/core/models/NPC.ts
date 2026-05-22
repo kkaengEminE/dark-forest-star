@@ -16,6 +16,9 @@ export enum NPCAction {
   COOPERATING = 'cooperating',
   FLEEING = 'fleeing',
   ATTACKING = 'attacking',
+  DRAWN_TO_LIGHT = 'drawn_to_light',
+  OPENING_CHEST = 'opening_chest',
+  REQUESTING_HELP = 'requesting_help',
 }
 
 export interface NPCData {
@@ -33,6 +36,9 @@ export interface NPCData {
   inventory: InventoryState;
   currentAction: NPCAction;
   trustOfPlayer: number;
+  targetChestId?: string | null;
+  drawTargetX?: number;
+  drawTargetY?: number;
 }
 
 export function createNPC(x: number, y: number, disposition: NPCDisposition = NPCDisposition.NEUTRAL): NPCData {

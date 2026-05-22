@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { FlowerType } from '../core/models/Flower';
+import { ChestType } from '../core/models/Chest';
 
 const COLOR_MOUNTAIN = 0x2a2a3a;
 const COLOR_MOUNTAIN_SNOW = 0x445566;
@@ -249,6 +250,72 @@ export function createSpecialFlowerBloom(): THREE.Group {
   const glow = new THREE.PointLight(0xff88dd, 2.0, 15);
   glow.position.y = 1.0;
   group.add(glow);
+
+  return group;
+}
+
+// --- Chests ---
+
+export function createChestMesh(type: ChestType): THREE.Group {
+  const group = new THREE.Group();
+  const isCoop = type === ChestType.COOP;
+
+  // Body
+  const bw = isCoop ? 0.9 : 0.6;
+  const bh = isCoop ? 0.65 : 0.45;
+  const bd = isCoop ? 0.65 : 0.45;
+  const bodyGeo = new THREE.BoxGeometry(bw, bh, bd);
+  const bodyMat = new THREE.MeshStandardMaterial({
+    color: isCoop ? 0x6a5a4a : 0x6a4a2a,
+    roughness: 0.8,
+    metalness: isCoop ? 0.4 : 0.1,
+    emissive: isCoop ? 0x442266 : 0x000000,
+    emissiveIntensity: isCoop ? 0.3 : 0,
+  });
+  const body = new THREE.Mesh(bodyGeo, bodyMat);
+  body.position.y = bh / 2;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  group.add(body);
+
+  // Lid (slightly tilted, smaller box on top)
+  const lidGeo = new THREE.BoxGeometry(bw, bh * 0.2, bd);
+  const lid = new THREE.Mesh(lidGeo, bodyMat);
+  lid.position.y = bh + bh * 0.1;
+  group.add(lid);
+
+  // Lock (golden cone)
+  const lockGeo = new THREE.ConeGeometry(0.06, 0.12, 6);
+  const lockMat = new THREE.MeshStandardMaterial({
+    color: 0xffcc44,
+    emissive: 0xffaa22,
+    emissiveIntensity: 0.6,
+    metalness: 0.7,
+  });
+  const lock = new THREE.Mesh(lockGeo, lockMat);
+  lock.position.set(0, bh + 0.05, bd / 2 + 0.04);
+  group.add(lock);
+
+  if (isCoop) {
+    // Glow ring on the ground
+    const ringGeo = new THREE.TorusGeometry(0.8, 0.05, 8, 24);
+    const ringMat = new THREE.MeshStandardMaterial({
+      color: 0x66aaff,
+      emissive: 0x66aaff,
+      emissiveIntensity: 0.8,
+      transparent: true,
+      opacity: 0.7,
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.y = 0.02;
+    group.add(ring);
+
+    // Glow point light
+    const glow = new THREE.PointLight(0x66aaff, 1.0, 6);
+    glow.position.y = 0.5;
+    group.add(glow);
+  }
 
   return group;
 }
